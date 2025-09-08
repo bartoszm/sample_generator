@@ -1,0 +1,7 @@
+# Ensure consistent line endings
+txt text eol=lf
+py text eol=lf
+ipynb text eol=lf
+
+# Treat Jupyter Notebook as binary to avoid merge conflicts
+*.ipynb binary

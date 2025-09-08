@@ -1,0 +1,50 @@
+{
+  "definitions": {
+    "Person": {
+      "type": "object",
+      "properties": {
+        "firstName": {
+          "type": "string"
+        },
+        "lastName": {
+          "type": "string"
+        },
+        "age": {
+          "type": "integer",
+          "minimum": 18,
+          "maximum": 100
+        },
+        "homeAddress": {
+          "$ref": "#/definitions/Address"
+        }
+      },
+      "required": ["firstName", "lastName", "age"]
+    },
+    "Address": {
+      "type": "object",
+      "properties": {
+        "street": {
+          "type": "string"
+        },
+        "city": {
+          "type": "string"
+        },
+        "zipCode": {
+          "type": "string",
+          "pattern": "^[0-9]{5}$"
+        }
+      },
+      "required": ["street", "city", "zipCode"]
+    }
+  },
+  "type": "object",
+  "properties": {
+    "user": {
+      "$ref": "#/definitions/Person"
+    },
+    "workAddress": {
+      "$ref": "#/definitions/Address"
+    }
+  },
+  "required": ["user", "workAddress"]
+}

@@ -27,6 +27,7 @@ def test_scenario_default_data_initializes_result():
         default_data={
             "name": "Alice",
             "nested": {"flag": True},
+            "not_present_in_schema": "should be ignored",
         },
     )
 
@@ -42,6 +43,7 @@ def test_scenario_default_data_initializes_result():
     assert isinstance(result["age"], int)
     assert "count" in result["nested"]
     assert isinstance(result["nested"]["count"], int)
+    assert "not_present_in_schema" not in result
 
 
 def test_scenario_default_data_is_merged_not_overwritten():

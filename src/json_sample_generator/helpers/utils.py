@@ -1,7 +1,7 @@
 import copy
 import re
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Mapping
 
 from jsonref import JsonRef
 
@@ -50,7 +50,7 @@ def deep_merge(a: dict, b: dict) -> dict:
     return result
 
 
-def remove_nulls(obj):
+def remove_nulls(obj: Any) -> Any:
     """
     Remove all null values from a nested structure.
     """
@@ -117,7 +117,7 @@ def set_value_at_path(path: str, target: Any, value: Any, force: bool = True) ->
 
 
 def sort_with_priority(
-    data: Dict[str, Any],
+    data: Mapping[str, Any],
     priority: List[str] = ["@type", "@baseType", "id", "href"],
 ):
     def sort_w_p(lst):

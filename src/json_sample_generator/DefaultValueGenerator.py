@@ -1,6 +1,7 @@
 import json
+import math
 import random
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import rstr
 from faker import Faker
@@ -68,28 +69,62 @@ class DefaultValueGenerator:
 
         return lambda: fake.word()
 
-    def _integer_generator(self, schema: Dict[str, Any]) -> Callable:
-        """Generate integer data with range constraints."""
-        minimum = schema.get("minimum", -100)
-        maximum = schema.get("maximum", 100)
+    def _get_value(self, k: str, schema: Dict[str, Any], bound_shift: float) -> Optional[float]:
+        """
+        Return a numeric bound, applying bound_shift when exclusive bounds are used.
 
-        if schema.get("exclusiveMinimum"):
-            minimum += 1
-        if schema.get("exclusiveMaximum"):
-            maximum -= 1
+        Returns None when the key is not present or cannot be coerced to float.
+        """
+        ex_key = f"exclusive{k.capitalize()}"
+        if ex_key in schema and schema[ex_key] is not None:
+            try:
+                return float(schema[ex_key]) + bound_shift
+            except (TypeError, ValueError):
+                return None
+        if k in schema and schema[k] is not None:
+            try:
+                return float(schema[k])
+            except (TypeError, ValueError):
+                return None
+        return None
 
-        return lambda: random.randint(minimum, maximum)
+    def _min_max(
+        self, schema: Dict[str, Any], bound_shift: float, default_low: float, default_high: float
+    ) -> Tuple[float, float]:
+        minimum = self._get_value("minimum", schema, bound_shift)
+        maximum = self._get_value("maximum", schema, -bound_shift)
+
+        if minimum is None and maximum is None:
+            minimum, maximum = float(default_low), float(default_high)
+        elif minimum is None:
+            minimum, maximum = float(default_low), float(maximum)
+        elif maximum is None:
+            minimum, maximum = float(minimum), float(default_high)
+
+        # Ensure ordering
+        if minimum > maximum:
+            minimum, maximum = maximum, minimum
+        return minimum, maximum
+
+    def _integer_generator(
+        self, schema: Dict[str, Any], default_low: int = 0, default_high: int = 100
+    ) -> Callable:
+        """Generate integer data with range constraints.
+
+        Handles missing bounds and exclusiveMinimum/exclusiveMaximum by applying
+        a small integer shift and coercing bounds to integers.
+        """
+        minimum, maximum = self._min_max(schema, 1.0, default_low, default_high)
+
+        minimum = math.ceil(minimum)
+        maximum = math.floor(maximum)
+
+        return lambda: random.randint(int(minimum), int(maximum))
+        
 
     def _number_generator(self, schema: Dict[str, Any]) -> Callable:
         """Generate number data with range constraints."""
-        minimum = schema.get("minimum", -100.0)
-        maximum = schema.get("maximum", 100.0)
-
-        if schema.get("exclusiveMinimum"):
-            minimum += 0.01
-        if schema.get("exclusiveMaximum"):
-            maximum -= 0.01
-
+        minimum, maximum = self._min_max(schema, 0.01, 0.0, 1.0)
         return lambda: random.uniform(minimum, maximum)
 
     def _format_generator(self, fmt: str) -> Callable:

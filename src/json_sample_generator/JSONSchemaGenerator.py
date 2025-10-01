@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import random
 from typing import Any, Callable, Dict, List, Optional, cast
 
@@ -10,6 +11,31 @@ from .DefaultValueGenerator import DefaultValueGenerator
 from .helpers import allof_merge, to_type
 from .models import Context, Scenario, Schema
 from .SchemaGeneratorBuilder import SchemaGeneratorBuilder
+
+from proxytypes import LazyProxy
+
+_original_lazy_subject = LazyProxy.__subject__
+
+def _safe_lazy_subject(self):
+    try:
+        return object.__getattribute__(self, "cache")
+    except AttributeError:
+        pass
+    factory = getattr(self, "factory", None)
+    if callable(factory):
+        cache = factory()
+    else:
+        try:
+            cache = object.__getattribute__(self, "__wrapped__")
+        except AttributeError:
+            fget = getattr(_original_lazy_subject, "fget", None)
+            if fget is None:
+                raise AttributeError("LazyProxy.__subject__ missing fget")
+            cache = fget(self)
+    object.__setattr__(self, "cache", cache)
+    return cache
+
+LazyProxy.__subject__ = property(_safe_lazy_subject)
 
 fake = Faker()
 
@@ -31,21 +57,24 @@ class JSONSchemaGenerator:
         default_value_generator: GeneratorFunctionType = DefaultValueGenerator(),
         loader=jsonloader,
     ):
-        self.schema = schema
+        self.schema = Schema(
+            data=cast(Dict[Any, Any], copy.deepcopy(schema.data)),
+            base_uri=schema.base_uri,
+        )
         self.max_depth = max_depth
 
         uri = (
-            schema.base_uri
-            if schema.base_uri is not None
+            self.schema.base_uri
+            if self.schema.base_uri is not None
             else "file://dummy.json"
         )
 
-        loaded = replace_refs(schema.data, base_uri=uri, loader=loader)
+        loaded = replace_refs(self.schema.data, base_uri=uri, loader=loader)
         # Ensure schema.data is a dictionary after replacing references
         if isinstance(loaded, dict):
-            schema.data = cast(Dict[Any, Any], loaded)
+            self.schema.data = cast(Dict[Any, Any], loaded)
         else:
-            schema.data = cast(Dict[Any, Any], dict(cast(Any, loaded)))
+            self.schema.data = cast(Dict[Any, Any], dict(cast(Any, loaded)))
 
         self.scenario = scenario or Scenario(name="default")
         self.default_value_generator = default_value_generator
@@ -74,10 +103,13 @@ class JSONSchemaGenerator:
 
         # Initialize result with scenario default data if provided
         if active_scenario.default_data:
-            # Merge default_data into builder.generated
+            # Merge filtered default_data into builder.generated
             from .helpers.utils import deep_merge
 
-            builder.generated = deep_merge(builder.generated, active_scenario.default_data)
+            filtered_defaults = self._filter_default_data(
+                self.schema.data, active_scenario.default_data
+            )
+            builder.generated = deep_merge(builder.generated, filtered_defaults)
 
         # Build the initial context
         ctx = builder.build_context(self.schema)
@@ -87,6 +119,20 @@ class JSONSchemaGenerator:
         self._resolve_pending_fields(active_scenario, builder)
 
         return builder.get_result()
+
+    def _filter_default_data(
+        self, schema_fragment: Dict[str, Any], default_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Filter scenario default data so only known top-level properties are merged."""
+
+        if not isinstance(default_data, dict):
+            return default_data
+
+        properties = schema_fragment.get("properties")
+        if not isinstance(properties, dict):
+            return {}
+
+        return {k: v for k, v in default_data.items() if k in properties}
 
     def _scenario_defined(self, path: str, scenario: Scenario) -> bool:
         """

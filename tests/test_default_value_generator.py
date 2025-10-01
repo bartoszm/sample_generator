@@ -6,7 +6,6 @@ from typing import Any
 # ensure local source is imported instead of an installed package
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-import pytest
 
 from json_sample_generator.DefaultValueGenerator import DefaultValueGenerator
 

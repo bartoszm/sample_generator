@@ -52,14 +52,19 @@ def deep_merge(a: dict, b: dict) -> dict:
 
 def remove_nulls(obj: Any) -> Any:
     """
-    Remove all null values from a nested structure.
+    Remove all null values from a nested structure (dicts and lists).
     """
     if isinstance(obj, dict):
-        return {k: remove_nulls(v) for k, v in obj.items() if v is not None}
+        cleaned_dict = {}
+        for k, v in obj.items():
+            cleaned_value = remove_nulls(v)
+            if cleaned_value is not None:
+                cleaned_dict[k] = cleaned_value
+        return cleaned_dict
     elif isinstance(obj, list):
-        return [remove_nulls(i) for i in obj if i is not None]
-    else:
-        return obj
+        cleaned_list = [remove_nulls(i) for i in obj if i is not None]
+        return cleaned_list if cleaned_list else None
+    return obj
 
 
 def set_value_at_path(path: str, target: Any, value: Any, force: bool = True) -> Any:

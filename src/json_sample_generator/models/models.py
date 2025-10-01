@@ -24,7 +24,6 @@ class Scenario(BaseModel):
     )  # Allow any value type
     # Default data used to initialize the generated result
     default_data: Dict[str, Any] = Field(default_factory=dict)
-    
 
     def normalize(self) -> "Scenario":
         """

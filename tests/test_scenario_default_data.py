@@ -1,5 +1,5 @@
 from src.json_sample_generator import JSONSchemaGenerator
-from src.json_sample_generator.models import Schema, Scenario
+from src.json_sample_generator.models import Scenario, Schema
 
 
 def test_scenario_default_data_initializes_result():
@@ -49,12 +49,19 @@ def test_scenario_default_data_initializes_result():
 def test_scenario_default_data_is_merged_not_overwritten():
     schema_data = {
         "type": "object",
-        "properties": {"outer": {"type": "object", "properties": {"inner": {"type": "string"}}}},
+        "properties": {
+            "outer": {
+                "type": "object",
+                "properties": {"inner": {"type": "string"}},
+            }
+        },
     }
     schema = Schema(base_uri="file://dummy.json", data=schema_data)
 
     # default_data pre-creates nested structure
-    scenario = Scenario(name="merge-defaults", default_data={"outer": {"pre": 1}})
+    scenario = Scenario(
+        name="merge-defaults", default_data={"outer": {"pre": 1}}
+    )
 
     gen = JSONSchemaGenerator(schema=schema, scenario=scenario)
     res = gen.generate()

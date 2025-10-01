@@ -6,15 +6,15 @@ from typing import Any, Callable, Dict, List, Optional, cast
 
 from faker import Faker
 from jsonref import JsonRef, jsonloader, replace_refs
+from proxytypes import LazyProxy
 
 from .DefaultValueGenerator import DefaultValueGenerator
 from .helpers import allof_merge, to_type
 from .models import Context, Scenario, Schema
 from .SchemaGeneratorBuilder import SchemaGeneratorBuilder
 
-from proxytypes import LazyProxy
-
 _original_lazy_subject = LazyProxy.__subject__
+
 
 def _safe_lazy_subject(self):
     try:
@@ -34,6 +34,7 @@ def _safe_lazy_subject(self):
             cache = fget(self)
     object.__setattr__(self, "cache", cache)
     return cache
+
 
 LazyProxy.__subject__ = property(_safe_lazy_subject)
 
@@ -109,7 +110,9 @@ class JSONSchemaGenerator:
             filtered_defaults = self._filter_default_data(
                 self.schema.data, active_scenario.default_data
             )
-            builder.generated = deep_merge(builder.generated, filtered_defaults)
+            builder.generated = deep_merge(
+                builder.generated, filtered_defaults
+            )
 
         # Build the initial context
         ctx = builder.build_context(self.schema)

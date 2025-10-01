@@ -69,7 +69,9 @@ class DefaultValueGenerator:
 
         return lambda: fake.word()
 
-    def _get_value(self, k: str, schema: Dict[str, Any], bound_shift: float) -> Optional[float]:
+    def _get_value(
+        self, k: str, schema: Dict[str, Any], bound_shift: float
+    ) -> Optional[float]:
         """
         Return a numeric bound, applying bound_shift when exclusive bounds are used.
 
@@ -89,7 +91,11 @@ class DefaultValueGenerator:
         return None
 
     def _min_max(
-        self, schema: Dict[str, Any], bound_shift: float, default_low: float, default_high: float
+        self,
+        schema: Dict[str, Any],
+        bound_shift: float,
+        default_low: float,
+        default_high: float,
     ) -> Tuple[float, float]:
         minimum = self._get_value("minimum", schema, bound_shift)
         maximum = self._get_value("maximum", schema, -bound_shift)
@@ -107,20 +113,24 @@ class DefaultValueGenerator:
         return minimum, maximum
 
     def _integer_generator(
-        self, schema: Dict[str, Any], default_low: int = 0, default_high: int = 100
+        self,
+        schema: Dict[str, Any],
+        default_low: int = 0,
+        default_high: int = 100,
     ) -> Callable:
         """Generate integer data with range constraints.
 
         Handles missing bounds and exclusiveMinimum/exclusiveMaximum by applying
         a small integer shift and coercing bounds to integers.
         """
-        minimum, maximum = self._min_max(schema, 1.0, default_low, default_high)
+        minimum, maximum = self._min_max(
+            schema, 1.0, default_low, default_high
+        )
 
         minimum = math.ceil(minimum)
         maximum = math.floor(maximum)
 
         return lambda: random.randint(int(minimum), int(maximum))
-        
 
     def _number_generator(self, schema: Dict[str, Any]) -> Callable:
         """Generate number data with range constraints."""

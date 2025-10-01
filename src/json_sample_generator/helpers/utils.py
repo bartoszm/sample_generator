@@ -1,7 +1,7 @@
 import copy
 import re
 import uuid
-from typing import Any, Dict, List, Optional, Mapping
+from typing import Any, Dict, List, Mapping, Optional
 
 from jsonref import JsonRef
 
@@ -67,7 +67,9 @@ def remove_nulls(obj: Any) -> Any:
     return obj
 
 
-def set_value_at_path(path: str, target: Any, value: Any, force: bool = True) -> Any:
+def set_value_at_path(
+    path: str, target: Any, value: Any, force: bool = True
+) -> Any:
     """
     Set a value at a specified path in a nested dictionary or list.
     If the path does not exist, it will be created.
@@ -132,7 +134,7 @@ def sort_with_priority(
         return priority_part + rest_part
 
     if isinstance(data, list):
-        return [sort_with_priority(item, priority) for item in data]  
+        return [sort_with_priority(item, priority) for item in data]
 
     if not isinstance(data, dict):
         return data

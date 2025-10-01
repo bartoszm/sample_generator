@@ -1,4 +1,5 @@
 import pytest
+
 from src.json_sample_generator import JSONSchemaGenerator
 from src.json_sample_generator.models import Schema
 
@@ -73,8 +74,6 @@ def test_generate_with_file_and_fragment():
     assert 18 <= result["age"] <= 100, "User age should be between 18 and 100"
 
 
-
-
 def test_recursive_schema():
     # Recursive schema example
     schema_data = {
@@ -90,7 +89,9 @@ def test_recursive_schema():
         },
     }
 
-    recursive_schema = Schema(data=schema_data, base_uri="file://recursive.json")
+    recursive_schema = Schema(
+        data=schema_data, base_uri="file://recursive.json"
+    )
     generator = JSONSchemaGenerator(recursive_schema)
 
     # Ensure the generator can produce a result without infinite recursion

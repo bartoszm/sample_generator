@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from .helpers.utils import set_value_at_path, parse_path
+from .helpers.utils import parse_path, set_value_at_path
 from .models import Context, Schema
 
 

@@ -2,24 +2,25 @@
 
 Generate sample data from JSON Schema or OpenAPI (OAS) schemas. Create realistic samples for tests, examples, and fixtures.
 
-Badges (optional):
-
-- CI: GitHub Actions status
-- PyPI: version, downloads
-- License: MIT
+[![CI](https://github.com/bartoszm/sample_generator/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/bartoszm/sample_generator/actions/workflows/ci.yml)
+[![PyPI version](https://img.shields.io/pypi/v/sample-generator.svg)](https://pypi.org/project/sample-generator/)
+[![PyPI downloads/month](https://img.shields.io/pypi/dm/sample-generator.svg)](https://pypi.org/project/sample-generator/)
+[![License](https://img.shields.io/github/license/bartoszm/sample_generator.svg)](https://github.com/bartoszm/sample_generator/blob/main/LICENSE)
+[![Python versions](https://img.shields.io/pypi/pyversions/sample-generator.svg)](https://pypi.org/project/sample-generator/)
 
 ## Installation
 
 From PyPI:
 
 ```bash
-pip install json_sample_generator
+pip install sample-generator
+# importable module name remains `json_sample_generator`
 ```
 
 Or with uv:
 
 ```bash
-uv add json_sample_generator
+uv add sample-generator
 ```
 
 ## Quickstart
@@ -102,7 +103,7 @@ uvx pre-commit run --all-files
 
 Scenarios let you override generated values per field path with simple values or callables, and optionally with pattern-based rules. They accept a Context so overrides can depend on other fields.
 
-See the full guide (including `default_data`) in `docs/SCENARIOS.md`.
+See the full guide (including `default_data`) in [`docs/SCENARIOS.md`](docs/SCENARIOS.md).
 
 ## Contributing
 

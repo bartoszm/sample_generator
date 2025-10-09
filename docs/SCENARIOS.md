@@ -53,6 +53,7 @@ result = gen.generate(scenario)
 ```
 
 ## Callable overrides
+
 ```python
 def derived_email(ctx):
     # You can use ctx.data to reference other fields already set
@@ -84,6 +85,31 @@ scenario = Scenario(
 Notes:
 - Matching is substring, not regex. Use specific substrings to limit scope.
 - Direct overrides for exact paths win over pattern overrides.
+
+## oneOf selectors
+When a schema node uses `oneOf`, provide `oneof_selectors` on `Scenario` to
+choose a branch deterministically. Matching is exact key first, then
+substring (same as `pattern_overrides`).
+
+```python
+scenario = Scenario(
+        name="oneof",
+        oneof_selectors={
+                # return index 1 from the oneOf list
+                "pet": lambda ctx, schemas: 1,
+
+                # or return a schema object from the candidates
+                "order.items": lambda ctx, schemas: schemas[0],
+        },
+).normalize()
+```
+
+Notes:
+- Selector signature: `fn(ctx, schemas) -> int | schema`.
+- Non-callable values (e.g. `1`) are normalized to callables by `normalize()`.
+- Generator consults selectors before the default random selection; invalid
+    indices raise `IndexError`.
+
 
 ## Reusing and composing scenarios
 There are two convenient approaches:

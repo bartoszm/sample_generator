@@ -323,8 +323,34 @@ class JSONSchemaGenerator:
             The generated value
         """
         schemas = ctx.schema_data.get("oneOf", [])
-        selected_index = random.randint(0, len(schemas) - 1)
-        selected = schemas[selected_index]
+
+        # First, check if scenario provides a selector for this path.
+        selector = None
+        path = ctx.prop_path
+        if hasattr(scenario, "oneof_selectors"):
+            # Exact path match
+            selector = scenario.oneof_selectors.get(path)
+            # If no exact match, check pattern keys (substring match)
+            if selector is None:
+                for pattern, sel in getattr(scenario, "oneof_selectors", {}).items():
+                    if pattern in path:
+                        selector = sel
+                        break
+
+        if selector is not None:
+            # Selector may return an index or a schema. Call with ctx and schemas.
+            sel_res = selector(ctx, schemas)
+            if isinstance(sel_res, int):
+                if sel_res < 0 or sel_res >= len(schemas):
+                    raise IndexError("oneOf selector returned out-of-range index")
+                selected = schemas[sel_res]
+            else:
+                # Assume selector returned a schema fragment
+                selected = sel_res
+        else:
+            selected_index = random.randint(0, len(schemas) - 1)
+            selected = schemas[selected_index]
+
         return self._generate_node(
             ctx.copy(schema_data=selected), scenario, builder
         )

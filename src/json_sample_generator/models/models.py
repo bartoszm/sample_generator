@@ -22,6 +22,10 @@ class Scenario(BaseModel):
     pattern_overrides: List[Tuple[str, Any]] = Field(
         default_factory=list
     )  # Allow any value type
+    # Optional selectors for oneOf arrays. Keys are property paths, values are
+    # callables that receive a Context and the list of candidate schemas and
+    # return either an index (int) or a selected schema object.
+    oneof_selectors: Dict[str, Any] = Field(default_factory=dict)
     # Default data used to initialize the generated result
     default_data: Dict[str, Any] = Field(default_factory=dict)
 
@@ -57,6 +61,19 @@ class Scenario(BaseModel):
         # Update the scenario with converted values
         self.overrides = converted_overrides
         self.pattern_overrides = converted_pattern_overrides
+
+        # Process oneOf selectors: convert non-callables to callables that
+        # return the provided value (index or schema) so users can provide a
+        # simple integer index or schema directly.
+        converted_oneof = {}
+        for key, value in self.oneof_selectors.items():
+            if callable(value):
+                converted_oneof[key] = value
+            else:
+                direct_value = value
+                converted_oneof[key] = lambda ctx, schemas, val=direct_value: val
+
+        self.oneof_selectors = converted_oneof
 
         return self
 

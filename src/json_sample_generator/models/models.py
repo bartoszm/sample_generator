@@ -71,7 +71,9 @@ class Scenario(BaseModel):
                 converted_oneof[key] = value
             else:
                 direct_value = value
-                converted_oneof[key] = lambda ctx, schemas, val=direct_value: val
+                converted_oneof[key] = (
+                    lambda ctx, schemas, val=direct_value: val
+                )
 
         self.oneof_selectors = converted_oneof
 

@@ -61,40 +61,36 @@ uv run python examples/simple_value_example.py
 
 ## Developer guide
 
-Code style:
-- PEP 8; line length 79
-- Type hints everywhere
+Code quality tools used by the project
 
-Common tasks:
-```bash
-# Lint
-uvx ruff check .
+- uv (astral.sh/uv) — virtualenv + task runner used in CI
+- ruff — linting (CI runs `uvx ruff check .`)
+- black — formatting (CI runs `uvx black --check .`)
+- isort — import sorting (CI runs `uvx isort --check-only .`)
+- pytest — test runner (CI runs `uv run pytest -q`)
 
-# Format
-uvx black .
-uvx isort .
+Automated-fix hints
 
-# Type-check
-uvx mypy .
+- Run ruff's auto-fixer to apply quick lint fixes:
+	```uvx ruff check . --fix```
+- Reformat code with black:
+	```uvx black .```
+- Sort imports with isort:
+	```uvx isort .```
+- Run the full CI steps locally (create venv first):
+	```bash
+    uv venv
+	uv sync --group dev
+	uvx ruff check .
+	uvx black --check . && uvx isort --check-only .
+	uv run pytest -q
+    ```
 
-# Test
-uv run pytest -q
-```
+These commands mirror what GitHub Actions runs so you can reproduce and fix CI failures locally.
 
-Build and publish:
-```bash
-# Build sdist + wheel
-uv build
+Build and publish reminders
 
-# Dry-run publish (uses ~/.pypirc or env vars)
-uv publish --dry-run
-```
-
-Release to PyPI:
-
-- Bump `__version__` in `src/json_sample_generator/__init__.py`
-- Create a GitHub release (tag must match version)
-- The publish workflow will build and upload to PyPI via trusted publishing
+The repository's publish workflow builds with `uv build` and uses the pypa/gh-action-pypi-publish action; for first-time releases you may need a PyPI API token (or configure OIDC/trusted publishing on PyPI).
 
 Pre-commit (recommended):
 ```bash

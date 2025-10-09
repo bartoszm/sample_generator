@@ -332,7 +332,9 @@ class JSONSchemaGenerator:
             selector = scenario.oneof_selectors.get(path)
             # If no exact match, check pattern keys (substring match)
             if selector is None:
-                for pattern, sel in getattr(scenario, "oneof_selectors", {}).items():
+                for pattern, sel in getattr(
+                    scenario, "oneof_selectors", {}
+                ).items():
                     if pattern in path:
                         selector = sel
                         break
@@ -342,7 +344,9 @@ class JSONSchemaGenerator:
             sel_res = selector(ctx, schemas)
             if isinstance(sel_res, int):
                 if sel_res < 0 or sel_res >= len(schemas):
-                    raise IndexError("oneOf selector returned out-of-range index")
+                    raise IndexError(
+                        "oneOf selector returned out-of-range index"
+                    )
                 selected = schemas[sel_res]
             else:
                 # Assume selector returned a schema fragment

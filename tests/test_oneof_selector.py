@@ -23,7 +23,9 @@ def test_oneof_selector_index():
     def select_cat(ctx, schemas):
         return 1
 
-    scenario = Scenario(name="oneof_index", oneof_selectors={"pet": select_cat})
+    scenario = Scenario(
+        name="oneof_index", oneof_selectors={"pet": select_cat}
+    )
 
     gen = JSONSchemaGenerator(schema=schema)
     result = gen.generate(scenario)
@@ -37,8 +39,14 @@ def test_oneof_selector_schema():
         "properties": {
             "pet": {
                 "oneOf": [
-                    {"type": "object", "properties": {"kind": {"const": "dog"}}},
-                    {"type": "object", "properties": {"kind": {"const": "cat"}}},
+                    {
+                        "type": "object",
+                        "properties": {"kind": {"const": "dog"}},
+                    },
+                    {
+                        "type": "object",
+                        "properties": {"kind": {"const": "cat"}},
+                    },
                 ]
             }
         },
@@ -49,7 +57,9 @@ def test_oneof_selector_schema():
     def select_dog_schema(ctx, schemas):
         return schemas[0]
 
-    scenario = Scenario(name="oneof_schema", oneof_selectors={"pet": select_dog_schema})
+    scenario = Scenario(
+        name="oneof_schema", oneof_selectors={"pet": select_dog_schema}
+    )
 
     gen = JSONSchemaGenerator(schema=schema)
     result = gen.generate(scenario)

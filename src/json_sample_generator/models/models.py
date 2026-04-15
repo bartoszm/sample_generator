@@ -29,6 +29,16 @@ class Scenario(BaseModel):
     # Default data used to initialize the generated result
     default_data: Dict[str, Any] = Field(default_factory=dict)
 
+    @property
+    def variant_selectors(self) -> Dict[str, Any]:
+        """Read-only alias for :attr:`oneof_selectors`.
+
+        Selectors now apply to both ``oneOf`` and ``anyOf`` branches, so
+        ``variant_selectors`` reads more accurately. The underlying dict is
+        the same object, so mutations through either name are visible.
+        """
+        return self.oneof_selectors
+
     def normalize(self) -> "Scenario":
         """
         Convert any non-function overrides to lambda functions automatically.

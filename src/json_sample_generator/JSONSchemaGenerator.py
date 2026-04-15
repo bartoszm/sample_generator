@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import random
+import re
 from typing import Any, Callable, Dict, List, Optional, cast
 
 from faker import Faker
@@ -290,20 +291,8 @@ class JSONSchemaGenerator:
     def _generate_any_of(
         self, ctx: Context, scenario: Scenario, builder: SchemaGeneratorBuilder
     ):
-        """
-        Generate a node that satisfies one of the schemas in an anyOf array.
-
-        Args:
-            ctx: The current generation context
-            scenario: The scenario to use for generation
-            builder: The builder instance for this generation
-
-        Returns:
-            The generated value
-        """
         schemas = ctx.schema_data.get("anyOf", [])
-        selected_index = random.randint(0, len(schemas) - 1)
-        selected = schemas[selected_index]
+        selected = self._resolve_variant(ctx, schemas, scenario, "anyOf")
         return self._generate_node(
             ctx.copy(schema_data=selected), scenario, builder
         )
@@ -311,52 +300,153 @@ class JSONSchemaGenerator:
     def _generate_one_of(
         self, ctx: Context, scenario: Scenario, builder: SchemaGeneratorBuilder
     ):
-        """
-        Generate a node that satisfies exactly one schema in a oneOf array.
-
-        Args:
-            ctx: The current generation context
-            scenario: The scenario to use for generation
-            builder: The builder instance for this generation
-
-        Returns:
-            The generated value
-        """
         schemas = ctx.schema_data.get("oneOf", [])
-
-        # First, check if scenario provides a selector for this path.
-        selector = None
-        path = ctx.prop_path
-        if hasattr(scenario, "oneof_selectors"):
-            # Exact path match
-            selector = scenario.oneof_selectors.get(path)
-            # If no exact match, check pattern keys (substring match)
-            if selector is None:
-                for pattern, sel in getattr(
-                    scenario, "oneof_selectors", {}
-                ).items():
-                    if pattern in path:
-                        selector = sel
-                        break
-
-        if selector is not None:
-            # Selector may return an index or a schema. Call with ctx and schemas.
-            sel_res = selector(ctx, schemas)
-            if isinstance(sel_res, int):
-                if sel_res < 0 or sel_res >= len(schemas):
-                    raise IndexError(
-                        "oneOf selector returned out-of-range index"
-                    )
-                selected = schemas[sel_res]
-            else:
-                # Assume selector returned a schema fragment
-                selected = sel_res
-        else:
-            selected_index = random.randint(0, len(schemas) - 1)
-            selected = schemas[selected_index]
-
+        selected = self._resolve_variant(ctx, schemas, scenario, "oneOf")
         return self._generate_node(
             ctx.copy(schema_data=selected), scenario, builder
+        )
+
+    def _resolve_variant(
+        self,
+        ctx: Context,
+        schemas: List[Dict[str, Any]],
+        scenario: Scenario,
+        kind: str,
+    ) -> Dict[str, Any]:
+        """Pick one branch from a oneOf/anyOf candidate list.
+
+        Selector lookup in ``scenario.oneof_selectors``:
+          1. exact match on ``ctx.prop_path``;
+          2. else first regex (``re.fullmatch``) in insertion order.
+
+        Selector return values:
+          * ``int`` — index into ``schemas`` (``bool`` rejected).
+          * ``str`` — resolved against candidate ``title``, then the
+            OpenAPI discriminator value (mapping key or the const/enum/
+            default of the property named by ``discriminator.propertyName``).
+          * ``dict`` — taken as the selected schema fragment.
+        """
+        if not schemas:
+            raise ValueError(
+                f"{kind} has no candidates at path "
+                f"'{ctx.prop_path or '<root>'}'"
+            )
+
+        selector = self._lookup_variant_selector(ctx.prop_path, scenario)
+        if selector is None:
+            return schemas[random.randint(0, len(schemas) - 1)]
+
+        sel_res = selector(ctx, schemas)
+
+        if isinstance(sel_res, bool):
+            raise TypeError(
+                f"{kind} selector at '{ctx.prop_path}' returned a bool; "
+                "expected int, str, or dict"
+            )
+        if isinstance(sel_res, int):
+            if sel_res < 0 or sel_res >= len(schemas):
+                raise IndexError(
+                    f"{kind} selector at '{ctx.prop_path}' returned "
+                    f"out-of-range index {sel_res} "
+                    f"(valid: 0..{len(schemas) - 1})"
+                )
+            return schemas[sel_res]
+        if isinstance(sel_res, str):
+            return self._resolve_variant_by_name(sel_res, schemas, ctx, kind)
+        if isinstance(sel_res, dict):
+            return sel_res
+
+        raise TypeError(
+            f"{kind} selector at '{ctx.prop_path}' returned "
+            f"{type(sel_res).__name__}; expected int, str, or dict"
+        )
+
+    @staticmethod
+    def _lookup_variant_selector(
+        path: str, scenario: Scenario
+    ) -> Optional[Callable[[Context, List[Dict[str, Any]]], Any]]:
+        selectors = scenario.oneof_selectors
+        if path in selectors:
+            return selectors[path]
+        for pattern, sel in selectors.items():
+            if pattern == path:
+                continue
+            try:
+                if re.fullmatch(pattern, path) is not None:
+                    return sel
+            except re.error:
+                # Treat invalid regex as non-matching rather than crashing.
+                continue
+        return None
+
+    @staticmethod
+    def _resolve_variant_by_name(
+        name: str,
+        schemas: List[Dict[str, Any]],
+        ctx: Context,
+        kind: str,
+    ) -> Dict[str, Any]:
+        # 1. title match
+        for s in schemas:
+            if isinstance(s, dict) and s.get("title") == name:
+                return s
+
+        # 2. discriminator-based match
+        disc = None
+        if isinstance(ctx.schema_data, dict):
+            disc = ctx.schema_data.get("discriminator")
+        if disc is None and isinstance(ctx.parent_schema, dict):
+            disc = ctx.parent_schema.get("discriminator")
+
+        prop_name = None
+        mapping: Dict[str, Any] = {}
+        if isinstance(disc, dict):
+            prop_name = disc.get("propertyName")
+            mapping = disc.get("mapping") or {}
+
+        # 2a. discriminator.mapping lookup
+        target_ref = mapping.get(name)
+        if target_ref is not None:
+            for s in schemas:
+                if not isinstance(s, dict):
+                    continue
+                # Schemas may still carry a $ref (jsonref inlined) — check
+                # either the raw ref or a title match on the referenced name.
+                if s.get("$ref") == target_ref:
+                    return s
+                # Fall back to matching by the last path segment of the ref.
+                ref_tail = str(target_ref).rsplit("/", 1)[-1]
+                if s.get("title") == ref_tail:
+                    return s
+
+        # 2b. match by the discriminator property's const/default/enum[0]
+        if prop_name:
+            for s in schemas:
+                if not isinstance(s, dict):
+                    continue
+                prop = (s.get("properties") or {}).get(prop_name)
+                if not isinstance(prop, dict):
+                    continue
+                if prop.get("const") == name:
+                    return s
+                if prop.get("default") == name:
+                    return s
+                enum = prop.get("enum")
+                if isinstance(enum, list) and name in enum:
+                    return s
+
+        # Build a helpful error listing what was available.
+        available_titles = [
+            s.get("title")
+            for s in schemas
+            if isinstance(s, dict) and s.get("title")
+        ]
+        raise ValueError(
+            f"{kind} selector at '{ctx.prop_path}' returned string "
+            f"{name!r}, but no candidate matched. "
+            f"Available titles: {available_titles or 'none'}; "
+            f"discriminator.propertyName: {prop_name!r}; "
+            f"discriminator.mapping keys: {list(mapping)}"
         )
 
     def _handle_array(

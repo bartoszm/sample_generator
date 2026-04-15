@@ -86,29 +86,60 @@ Notes:
 - Matching is substring, not regex. Use specific substrings to limit scope.
 - Direct overrides for exact paths win over pattern overrides.
 
-## oneOf selectors
-When a schema node uses `oneOf`, provide `oneof_selectors` on `Scenario` to
-choose a branch deterministically. Matching is exact key first, then
-substring (same as `pattern_overrides`).
+## Variant selectors (`oneof_selectors` / `variant_selectors`)
+
+Provide `oneof_selectors` on `Scenario` to choose a `oneOf` **or** `anyOf`
+branch deterministically instead of letting the generator pick randomly.
+
+### Key lookup
+
+1. **Exact key** — the key matches `ctx.prop_path` literally.
+2. **Regex fallback** — keys are treated as `re.fullmatch` patterns; the
+   first matching key (in insertion order) wins.
+
+Use the regex form to target every item in an array at once:
 
 ```python
 scenario = Scenario(
-        name="oneof",
-        oneof_selectors={
-                # return index 1 from the oneOf list
-                "pet": lambda ctx, schemas: 1,
+    name="variants",
+    oneof_selectors={
+        # exact path: pick index 1 from the oneOf on "pet"
+        "pet": 1,
 
-                # or return a schema object from the candidates
-                "order.items": lambda ctx, schemas: schemas[0],
-        },
+        # regex: apply to items[0], items[1], … — any array index
+        r"order\.items\[\d+\]": lambda ctx, schemas: 0,
+    },
 ).normalize()
 ```
 
-Notes:
-- Selector signature: `fn(ctx, schemas) -> int | schema`.
-- Non-callable values (e.g. `1`) are normalized to callables by `normalize()`.
-- Generator consults selectors before the default random selection; invalid
-    indices raise `IndexError`.
+### Selector return values
+
+| Return type | Behaviour |
+|---|---|
+| `int` | Selects the candidate at that index (bounds-checked, `bool` rejected). |
+| `str` | Matched against each candidate's `title`, then the OpenAPI `discriminator` mapping, then `properties[propertyName].const/enum/default`. Raises `ValueError` on no match. |
+| `dict` | Taken as the selected schema fragment directly. |
+
+```python
+# Select by schema title (works for both oneOf and anyOf)
+Scenario(
+    name="by_title",
+    oneof_selectors={"pet": "Cat"},
+).normalize()
+
+# Select by OpenAPI discriminator value
+Scenario(
+    name="by_disc",
+    oneof_selectors={"pet": "cat"},  # matches properties.kind.const == "cat"
+).normalize()
+```
+
+### Notes
+- `normalize()` wraps bare `int`, `str`, and `dict` values into callables.
+- The field alias `variant_selectors` is a read-only synonym for
+  `oneof_selectors` — both names refer to the same dict.
+- `bool` returns from a selector raise `TypeError` (Python's `isinstance(True, int)` gotcha).
+- If no selector matches a path, a random candidate is chosen (default behaviour).
 
 
 ## Reusing and composing scenarios
@@ -207,6 +238,78 @@ Behavior notes:
 - Primitive values present in `default_data` are kept and not overwritten by the generator.
 - Object defaults are merged; missing properties are added by the generator.
 - Overrides and pattern overrides still apply as usual and can compute values based on the evolving Context.
+
+## Enumerating scenarios for oneOf/anyOf coverage
+
+Use `collect_variant_sites`, `cartesian_scenarios`, and `minimal_scenarios`
+from `json_sample_generator` to auto-build a scenario set that covers every
+branch in your schema.
+
+```python
+from json_sample_generator import (
+    JSONSchemaGenerator,
+    cartesian_scenarios,
+    minimal_scenarios,
+)
+from json_sample_generator.models import Schema
+
+schema = Schema.from_raw_data(
+    {
+        "type": "object",
+        "properties": {
+            "animal": {
+                "oneOf": [
+                    {"title": "Dog", "type": "object",
+                     "properties": {"kind": {"const": "dog"}}},
+                    {"title": "Cat", "type": "object",
+                     "properties": {"kind": {"const": "cat"}}},
+                ]
+            },
+            "color": {"oneOf": [{"const": "red"}, {"const": "blue"}]},
+        },
+    },
+    base_uri="file://example.json",
+)
+
+gen = JSONSchemaGenerator(schema=schema)
+
+# Full cartesian product: 2 × 2 = 4 scenarios
+for scenario in cartesian_scenarios(schema):
+    print(scenario.name, scenario.description)
+    result = gen.generate(scenario)
+    print(result)
+
+# Minimal 1-wise cover: max(2, 2) = 2 scenarios
+# — every variant of every site appears at least once
+for scenario in minimal_scenarios(schema):
+    print(scenario.name, scenario.description)
+    result = gen.generate(scenario)
+    print(result)
+```
+
+### API
+
+| Function | Returns | Count |
+|---|---|---|
+| `collect_variant_sites(schema)` | `list[VariantSite]` | — |
+| `cartesian_scenarios(schema, *, name_prefix, base, max_scenarios)` | `list[Scenario]` | `∏ site.count` |
+| `minimal_scenarios(schema, *, name_prefix, base)` | `list[Scenario]` | `max(site.count)` |
+
+**`VariantSite` fields:** `path` (e.g. `"animal"` or `"items[*]"`), `kind`
+(`"oneOf"` or `"anyOf"`), `count`, `names` (titles/discriminator values, or
+`"variant_0"`, `"variant_1"`, …).
+
+**`base` parameter:** pass an existing `Scenario` to inherit its `overrides`,
+`pattern_overrides`, and `default_data` on every generated scenario.
+
+**Cartesian cap:** if the product would exceed `max_scenarios` (default
+10 000), `cartesian_scenarios` raises `ValueError`. Pass `max_scenarios=N`
+to override.
+
+**Nested sites:** sites nested inside oneOf variants are collected
+independently. The coverage claim ("every variant appears at least once")
+holds per site; whether a nested branch is reachable depends on which outer
+variant was selected.
 
 ## Best practices
 - Prefer simple values; use callables only when you need context-aware logic.

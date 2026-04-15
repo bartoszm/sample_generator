@@ -3,6 +3,12 @@ from __future__ import annotations
 from .DefaultValueGenerator import DefaultValueGenerator
 from .helpers.utils import duuid
 from .JSONSchemaGenerator import JSONSchemaGenerator
+from .scenario_enum import (
+    VariantSite,
+    cartesian_scenarios,
+    collect_variant_sites,
+    minimal_scenarios,
+)
 from .SchemaGeneratorBuilder import SchemaGeneratorBuilder
 
 """
@@ -20,4 +26,8 @@ __all__ = [
     "DefaultValueGenerator",
     "duuid",
     "SchemaGeneratorBuilder",
+    "VariantSite",
+    "collect_variant_sites",
+    "cartesian_scenarios",
+    "minimal_scenarios",
 ]

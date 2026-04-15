@@ -28,6 +28,10 @@ class Scenario(BaseModel):
     oneof_selectors: Dict[str, Any] = Field(default_factory=dict)
     # Default data used to initialize the generated result
     default_data: Dict[str, Any] = Field(default_factory=dict)
+    # When True, omit optional properties that are not explicitly referenced
+    # by overrides, default_data, or oneof_selectors. Only required fields
+    # (and explicitly-mentioned ones) are emitted.
+    minimal_mode: bool = False
 
     @property
     def variant_selectors(self) -> Dict[str, Any]:

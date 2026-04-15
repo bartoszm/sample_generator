@@ -11,6 +11,7 @@ from proxytypes import LazyProxy
 
 from .DefaultValueGenerator import DefaultValueGenerator
 from .helpers import allof_merge, to_type
+from .helpers.utils import path_startswith
 from .models import Context, Scenario, Schema
 from .SchemaGeneratorBuilder import SchemaGeneratorBuilder
 
@@ -449,6 +450,37 @@ class JSONSchemaGenerator:
             f"discriminator.mapping keys: {list(mapping)}"
         )
 
+    def _should_include_optional(
+        self,
+        child_path: str,
+        scenario: Scenario,
+        builder: SchemaGeneratorBuilder,
+    ) -> bool:
+        """Return True if an optional property at *child_path* should be
+        included when :attr:`Scenario.minimal_mode` is active.
+
+        A field is included when any of the following is true:
+
+        * An entry in ``scenario.overrides`` equals or starts with
+          *child_path* (exact match or a descendant path).
+        * ``scenario.default_data`` already seeded a value at *child_path*
+          (checked via the builder's ``has_value_at_path``).
+        * An entry in ``scenario.oneof_selectors`` equals or starts with
+          *child_path*.
+
+        ``pattern_overrides`` are intentionally excluded — they apply to
+        fields that survive filtering but do not force optional fields in.
+        """
+        for key in scenario.overrides:
+            if path_startswith(child_path, key):
+                return True
+        if builder.has_value_at_path(child_path):
+            return True
+        for key in scenario.oneof_selectors:
+            if path_startswith(child_path, key):
+                return True
+        return False
+
     def _handle_array(
         self, ctx: Context, scenario: Scenario, builder: SchemaGeneratorBuilder
     ) -> List[Any]:
@@ -505,10 +537,16 @@ class JSONSchemaGenerator:
         if props is None:
             return {}
 
+        required_set = set(ctx.schema_data.get("required") or [])
         result: Dict[str, Any] = {}
 
         for k, v in props.items():
             child_path = f"{ctx.prop_path}.{k}" if ctx.prop_path else k
+            if scenario.minimal_mode and k not in required_set:
+                if not self._should_include_optional(
+                    child_path, scenario, builder
+                ):
+                    continue
             # Inherit schema_path by default; override if this property is a $ref
             child_schema_path = (
                 v.__reference__["$ref"]

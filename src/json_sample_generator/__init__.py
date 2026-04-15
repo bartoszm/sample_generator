@@ -19,7 +19,7 @@ The library supports scenarios for customizing sample generation and a builder
 pattern for managing generation state.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "JSONSchemaGenerator",

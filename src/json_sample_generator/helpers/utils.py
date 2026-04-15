@@ -36,6 +36,18 @@ def parse_path(path: str):
     return keys
 
 
+def path_startswith(prefix: str, path: str) -> bool:
+    """Return True if *path* is equal to *prefix* or begins with it.
+
+    Uses the dot/bracket conventions of :func:`parse_path` so that a prefix
+    of ``"foo"`` matches ``"foo"``, ``"foo.bar"``, and ``"foo[0]"`` but not
+    ``"foobar"``.
+    """
+    if path == prefix:
+        return True
+    return path.startswith(prefix + ".") or path.startswith(prefix + "[")
+
+
 def deep_merge(a: dict, b: dict) -> dict:
     result = copy.deepcopy(a)
     for k, v in b.items():

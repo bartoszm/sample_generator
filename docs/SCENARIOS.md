@@ -311,6 +311,55 @@ independently. The coverage claim ("every variant appears at least once")
 holds per site; whether a nested branch is reachable depends on which outer
 variant was selected.
 
+## Minimal mode
+
+Set `minimal_mode=True` on a `Scenario` to generate the smallest valid
+sample: only **required** fields (recursively through nested objects,
+`allOf`, `oneOf`, `anyOf`) plus any fields you have **explicitly
+referenced** in the scenario.
+
+```python
+scenario = Scenario(
+    name="smoke",
+    minimal_mode=True,
+    overrides={"desc": "forced"},   # pulls in optional "desc"
+)
+```
+
+### Inclusion rules (applied per object node)
+
+An optional property `k` at path `P` is kept when any of the following
+is true:
+
+| Condition | Detail |
+|---|---|
+| `k in required` | The parent schema's `required` list contains `k`. |
+| Exact override | `scenario.overrides` has a key equal to `P`. |
+| Descendant override | Any `overrides` key starts with `P.` or `P[`. |
+| `default_data` pre-seeded | The builder already holds a value at `P` (via `default_data`). |
+| Selector targets subtree | Any `oneof_selectors` key equals `P` or starts with `P.` / `P[`. |
+
+`pattern_overrides` are **not** forcing — they apply to fields that
+survive filtering for other reasons but do not cause optional fields to
+appear. Because patterns are substring matches they can be broad; treating
+them as forcing would often pull in unintended fields.
+
+### Interaction with other features
+
+- **`allOf`** — `allof_merge` already unions `required` across all
+  branches, so the merged schema's `required` list is the authoritative
+  source for the minimal filter.
+- **`oneOf` / `anyOf`** — variant selection runs first (respecting
+  `oneof_selectors`), then the chosen branch's own `required` governs
+  which fields appear.
+- **Arrays** — the array field itself is subject to the object-level
+  filter. Once kept, every item is generated with `minItems`/`maxItems`
+  bounds unchanged, and the minimal filter recurses into each item's
+  object schema.
+- **`max_depth`** and ref resolution — unchanged.
+- **`default_data`** — pre-seeded values at a path force that path to be
+  kept, and seeded values are preserved in the output.
+
 ## Best practices
 - Prefer simple values; use callables only when you need context-aware logic.
 - Keep scenarios small and composable; merge at the edge.

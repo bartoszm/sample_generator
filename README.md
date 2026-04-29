@@ -105,6 +105,12 @@ Scenarios let you override generated values per field path with simple values or
 
 See the full guide (including `default_data`) in [`docs/SCENARIOS.md`](docs/SCENARIOS.md).
 
+## User guide: Break Scenarios
+
+Break scenarios take a valid generated sample and intentionally corrupt it so that it fails JSON Schema validation — useful for negative-path tests, validator error-message testing, and schema-evolution checks.
+
+See the full guide in [`docs/BREAK_SCENARIOS.md`](docs/BREAK_SCENARIOS.md).
+
 ## Contributing
 
 See `CONTRIBUTING.md`.

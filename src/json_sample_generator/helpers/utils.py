@@ -135,6 +135,59 @@ def set_value_at_path(
         return set_value(ref, key, value)
 
 
+def get_value_at_path(path: str, target: Any) -> Any:
+    """Return the value at *path* in *target*, or ``None`` if not found."""
+    if not path:
+        return target
+    try:
+        ref: Any = target
+        for key, idx in parse_path(path):
+            if not isinstance(ref, dict) or key not in ref:
+                return None
+            ref = ref[key]
+            if idx is not None:
+                if not isinstance(ref, list) or idx >= len(ref):
+                    return None
+                ref = ref[idx]
+        return ref
+    except Exception:
+        return None
+
+
+def delete_value_at_path(path: str, target: Any) -> bool:
+    """Delete the value at *path* from *target*.
+
+    Returns ``True`` if the key existed and was deleted, ``False`` if
+    the path did not exist.
+    """
+    if not path:
+        return False
+
+    keys = parse_path(path)
+
+    ref = target
+    for key, idx in keys[:-1]:
+        if key not in ref:
+            return False
+        if idx is not None:
+            if idx >= len(ref[key]):
+                return False
+            ref = ref[key][idx]
+        else:
+            ref = ref[key]
+
+    key, idx = keys[-1]
+    if idx is not None:
+        if key not in ref or idx >= len(ref[key]):
+            return False
+        del ref[key][idx]
+    else:
+        if key not in ref:
+            return False
+        del ref[key]
+    return True
+
+
 def sort_with_priority(
     data: Mapping[str, Any],
     priority: List[str] = ["@type", "@baseType", "id", "href"],

@@ -105,6 +105,25 @@ Scenarios let you override generated values per field path with simple values or
 
 See the full guide (including `default_data`) in [`docs/SCENARIOS.md`](docs/SCENARIOS.md).
 
+## User guide: Loading from OpenAPI (OAS)
+
+To load a component schema from an OpenAPI Specification:
+
+```python
+import yaml
+from src.json_sample_generator import JSONSchemaGenerator
+from src.json_sample_generator.models import Schema
+
+with open("api.yaml") as f:
+    oas = yaml.safe_load(f)
+
+schema = Schema.from_oas(oas, name="Pet")
+gen = JSONSchemaGenerator(schema)
+sample = gen.generate()
+```
+
+This correctly resolves cross-component `$ref` pointers. See the full guide in [`docs/OPENAPI.md`](docs/OPENAPI.md) for advanced usage, the `jsonref` caching details, and when to use `from_raw_data` vs `from_oas`.
+
 ## User guide: Break Scenarios
 
 Break scenarios take a valid generated sample and intentionally corrupt it so that it fails JSON Schema validation — useful for negative-path tests, validator error-message testing, and schema-evolution checks.

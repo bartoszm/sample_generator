@@ -1,6 +1,7 @@
 # scenario.py
 from __future__ import annotations
 
+import warnings
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union, cast
 
 from jsonref import jsonloader, replace_refs
@@ -104,6 +105,15 @@ class Schema(BaseModel):
         Create a Schema instance from raw data.
         This is useful for creating schemas without needing to load from a file.
         """
+        if "#" not in base_uri and "components" in raw:
+            warnings.warn(
+                "base_uri has no fragment but the schema data contains a "
+                "'components' key — this looks like a full OpenAPI document. "
+                "Use Schema.from_oas(oas_dict, name=...) to correctly resolve "
+                "$refs within component schemas.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         data = cast(
             Dict[Any, Any],
@@ -127,6 +137,50 @@ class Schema(BaseModel):
             data = current_data
 
         return Schema(data=data, base_uri=base_uri)
+
+    @staticmethod
+    def from_oas(
+        oas_dict: Dict[str, Any],
+        name: str,
+        base_uri: str = "file:///oas.yaml",
+    ) -> "Schema":
+        """
+        Create a Schema from a named component in an OpenAPI Specification.
+
+        This method resolves all $refs in the context of the full OAS
+        document before extracting the target component, avoiding the
+        jsonref caching bug that occurs when replace_refs is called on a
+        schema fragment directly.
+
+        Args:
+            oas_dict: The full OpenAPI Specification dictionary.
+            name: The name of the component schema to extract
+                (from components/schemas/{name}).
+            base_uri: The base URI for ref resolution (default
+                "file:///oas.yaml").
+
+        Returns:
+            A Schema instance with the extracted component and a
+            base_uri pointing to the component fragment.
+
+        Raises:
+            ValueError: If the named schema is not found in
+                components/schemas.
+        """
+        resolved = replace_refs(
+            oas_dict, base_uri=base_uri, proxies=False, loader=jsonloader
+        )
+        try:
+            schema_data = resolved["components"]["schemas"][name]
+        except KeyError:
+            raise ValueError(
+                f"Schema '{name}' not found in components/schemas "
+                "of the OAS document."
+            )
+        return Schema(
+            data=dict(schema_data),
+            base_uri=f"{base_uri}#/components/schemas/{name}",
+        )
 
 
 class Context(BaseModel):

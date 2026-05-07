@@ -53,6 +53,10 @@ Overrides can reference sibling data that hasn't been generated yet. When that h
 
 Schemas may carry a `base_uri`. `Schema.from_raw_data` supports URIs with fragments (`…#/components/schemas/Foo`) — it resolves refs against the whole document, then navigates into the fragment. OpenAPI-style tests in `tests/test_oas_components_allof.py` and `tests/test_ctx_schema_path_for_refs.py` are the reference cases for this behavior.
 
+### Generator-level array cap (`generator_max_items`)
+
+`JSONSchemaGenerator(..., generator_max_items=N)` applies a global upper bound on array length inside `_handle_array`. When `maxItems` is **absent** from the schema, the cap *replaces* the legacy `max(minItems, 2)` default; when `maxItems` is **present**, it becomes `min(schema.maxItems, generator_max_items)`. `None` (default) preserves legacy behavior in both cases. The schema's `minItems` is **not** clamped — picking `generator_max_items` lower than any encountered `minItems` will make `random.randint(min, max)` raise. Useful for taming third-party schemas with unrealistically large `maxItems`. User-facing docs live in `README.md` under "User guide: Capping array size".
+
 ## Testing notes
 
 - `pytest.ini` sets `testpaths = tests` and `-v` by default.

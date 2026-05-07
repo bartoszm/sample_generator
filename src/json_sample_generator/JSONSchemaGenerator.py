@@ -59,12 +59,14 @@ class JSONSchemaGenerator:
         max_depth: int = 6,
         default_value_generator: GeneratorFunctionType = DefaultValueGenerator(),
         loader=jsonloader,
+        generator_max_items: Optional[int] = None,
     ):
         self.schema = Schema(
             data=cast(Dict[Any, Any], copy.deepcopy(schema.data)),
             base_uri=schema.base_uri,
         )
         self.max_depth = max_depth
+        self.generator_max_items = generator_max_items
 
         uri = (
             self.schema.base_uri
@@ -499,7 +501,12 @@ class JSONSchemaGenerator:
         items = schema.get("items", {})
 
         min_items = schema.get("minItems", 0)
-        max_items = schema.get("maxItems", max(min_items, 2))
+        bounds = [
+            b
+            for b in (schema.get("maxItems"), self.generator_max_items)
+            if b is not None
+        ]
+        max_items = min(bounds) if bounds else max(min_items, 2)
         count = random.randint(min_items, max_items)
 
         # Derive schema_path for array items when items is a $ref

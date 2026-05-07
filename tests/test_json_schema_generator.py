@@ -161,3 +161,132 @@ def test_recursive_schema_with_repeated_generators():
 
     assert isinstance(first_result, dict)
     assert isinstance(second_result, dict)
+
+
+def test_generator_max_items_caps_large_schema_maxitems():
+    schema_data = {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 100,
+                "items": {"type": "string"},
+            }
+        },
+        "required": ["items"],
+    }
+
+    schema = Schema(data=schema_data)
+    generator = JSONSchemaGenerator(schema, generator_max_items=5)
+
+    result = generator.generate()
+
+    assert isinstance(result, dict)
+    assert "items" in result
+    assert isinstance(result["items"], list)
+    assert 1 <= len(result["items"]) <= 5
+
+
+def test_generator_max_items_respects_schema_min_constraint():
+    schema_data = {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 10,
+                "items": {"type": "integer"},
+            }
+        },
+        "required": ["items"],
+    }
+
+    schema = Schema(data=schema_data)
+    generator = JSONSchemaGenerator(schema, generator_max_items=5)
+
+    result = generator.generate()
+
+    assert isinstance(result, dict)
+    assert "items" in result
+    assert isinstance(result["items"], list)
+    assert 2 <= len(result["items"]) <= 5
+
+
+def test_generator_max_items_with_no_schema_maxitems():
+    # When maxItems is undefined, generator_max_items must be the upper
+    # bound — not the legacy default of max(minItems, 2). With minItems=3
+    # and generator_max_items=10, a buggy implementation that falls back
+    # to max(3, 2)=3 would always yield exactly 3 items; the fix allows
+    # 3..10. Run repeatedly and assert we eventually observe a length > 3.
+    schema_data = {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "minItems": 3,
+                "items": {"type": "string"},
+            }
+        },
+        "required": ["items"],
+    }
+
+    schema = Schema(data=schema_data)
+    generator = JSONSchemaGenerator(schema, generator_max_items=10)
+
+    observed_lengths = set()
+    for _ in range(50):
+        result = generator.generate()
+        length = len(result["items"])
+        assert 3 <= length <= 10
+        observed_lengths.add(length)
+
+    assert any(length > 3 for length in observed_lengths)
+
+
+def test_generator_max_items_defaults_to_none():
+    schema_data = {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "maxItems": 100,
+                "items": {"type": "string"},
+            }
+        },
+        "required": ["items"],
+    }
+
+    schema = Schema(data=schema_data)
+    generator = JSONSchemaGenerator(schema)
+
+    result = generator.generate()
+
+    assert isinstance(result, dict)
+    assert "items" in result
+    assert isinstance(result["items"], list)
+
+
+def test_generator_max_items_respects_smaller_schema_maxitems():
+    schema_data = {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 3,
+                "items": {"type": "integer"},
+            }
+        },
+        "required": ["items"],
+    }
+
+    schema = Schema(data=schema_data)
+    generator = JSONSchemaGenerator(schema, generator_max_items=10)
+
+    result = generator.generate()
+
+    assert isinstance(result, dict)
+    assert "items" in result
+    assert isinstance(result["items"], list)
+    assert 1 <= len(result["items"]) <= 3

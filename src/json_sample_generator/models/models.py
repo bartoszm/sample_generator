@@ -33,6 +33,12 @@ class Scenario(BaseModel):
     # by overrides, default_data, or oneof_selectors. Only required fields
     # (and explicitly-mentioned ones) are emitted.
     minimal_mode: bool = False
+    # When True, emit ONLY fields covered by the scenario
+    # (overrides, pattern_overrides, default_data, oneof_selectors).
+    # Stricter than minimal_mode: even required fields are omitted if
+    # the scenario does not touch them. The produced sample may be
+    # schema-invalid by design.
+    scenario_only: bool = False
 
     @property
     def variant_selectors(self) -> Dict[str, Any]:

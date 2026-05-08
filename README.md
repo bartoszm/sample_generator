@@ -103,6 +103,11 @@ uvx pre-commit run --all-files
 
 Scenarios let you override generated values per field path with simple values or callables, and optionally with pattern-based rules. They accept a Context so overrides can depend on other fields.
 
+Key `Scenario` flags:
+
+- `minimal_mode=True` — emit only `required` fields plus any explicitly referenced by the scenario.
+- `scenario_only=True` — stricter: emit **only** fields covered by the scenario (overrides, pattern_overrides, default_data, oneof_selectors), regardless of `required`. Produces focused fixtures that may be schema-invalid by design.
+
 See the full guide (including `default_data`) in [`docs/SCENARIOS.md`](docs/SCENARIOS.md).
 
 ## User guide: Loading from OpenAPI (OAS)

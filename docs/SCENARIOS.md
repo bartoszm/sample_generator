@@ -360,6 +360,54 @@ them as forcing would often pull in unintended fields.
 - **`default_data`** — pre-seeded values at a path force that path to be
   kept, and seeded values are preserved in the output.
 
+## Scenario-only mode
+
+Set `scenario_only=True` on a `Scenario` to emit **only** what the
+scenario explicitly covers. This is stricter than `minimal_mode`:
+even `required` fields are dropped if the scenario does not touch
+them. The resulting sample may be schema-invalid by design — useful
+for focused fixtures and contract-test payloads where the test only
+cares about a specific subset of fields.
+
+```python
+scenario = Scenario(
+    name="contract",
+    scenario_only=True,
+    overrides={"address.city": "NYC"},
+)
+# result: {"address": {"city": "NYC"}}
+# "id", "name", "address.street" etc. are all absent
+```
+
+### Coverage rules
+
+A field at path `P` is **covered** (and therefore emitted) when any
+of the following is true:
+
+| Condition | Detail |
+|---|---|
+| Exact override | `scenario.overrides` has a key equal to `P`. |
+| Descendant override | Any `overrides` key starts with `P.` or `P[`. |
+| Pattern override | Any pattern string in `pattern_overrides` is a substring of `P`, **or** `P` is a substring of the pattern (permissive check to avoid false negatives on deep paths). |
+| `default_data` pre-seeded | The builder already holds a value at `P` (from `default_data` merge). |
+| Selector targets subtree | Any `oneof_selectors` key equals `P` or starts with `P.` / `P[`. |
+
+If none of these conditions hold for a given path, no value is written
+and the field does not appear in the output. Ancestor objects and arrays
+with no covered descendants are also absent because they are only
+materialised by writing to leaf paths.
+
+### Interaction with other features
+
+- **`minimal_mode`** — if both are `True`, `scenario_only` wins (it is
+  strictly stricter). Required fields are still omitted if uncovered.
+- **`oneOf` / `anyOf`** — the branch is picked as normal (random or via
+  `oneof_selectors`); inside the chosen branch only covered fields appear.
+- **Arrays** — if no covered path descends into the array the whole array
+  is omitted. When covered (e.g. via `pattern_overrides` or
+  `default_data`), items are generated with the normal bounds.
+- **`default_data`** — pre-seeded values are preserved exactly as provided.
+
 ## Best practices
 - Prefer simple values; use callables only when you need context-aware logic.
 - Keep scenarios small and composable; merge at the edge.

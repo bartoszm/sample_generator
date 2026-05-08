@@ -265,6 +265,8 @@ class JSONSchemaGenerator:
             # If scenario default_data already provides a value at this path, keep it
             if builder.has_value_at_path(path):
                 return builder.get_value_at_path(path)
+            if scenario.scenario_only:
+                return None
             val = self._default_value(schema)
             return builder.set_value_at_path(path, val)
 
@@ -452,6 +454,30 @@ class JSONSchemaGenerator:
             f"discriminator.mapping keys: {list(mapping)}"
         )
 
+    def _subtree_has_coverage(
+        self,
+        child_path: str,
+        scenario: Scenario,
+        builder: SchemaGeneratorBuilder,
+    ) -> bool:
+        """Return True if the scenario covers child_path or any descendant.
+
+        Coverage = exact override, pattern_override that could match a
+        descendant path, default_data seed, or oneof_selector entry.
+        """
+        for key in scenario.overrides:
+            if path_startswith(child_path, key):
+                return True
+        for key in scenario.oneof_selectors:
+            if path_startswith(child_path, key):
+                return True
+        if builder.has_value_at_path(child_path):
+            return True
+        for pat, _ in scenario.pattern_overrides:
+            if pat in child_path or child_path in pat:
+                return True
+        return False
+
     def _should_include_optional(
         self,
         child_path: str,
@@ -549,7 +575,12 @@ class JSONSchemaGenerator:
 
         for k, v in props.items():
             child_path = f"{ctx.prop_path}.{k}" if ctx.prop_path else k
-            if scenario.minimal_mode and k not in required_set:
+            if scenario.scenario_only:
+                if not self._subtree_has_coverage(
+                    child_path, scenario, builder
+                ):
+                    continue
+            elif scenario.minimal_mode and k not in required_set:
                 if not self._should_include_optional(
                     child_path, scenario, builder
                 ):

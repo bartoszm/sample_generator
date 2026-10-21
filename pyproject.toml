@@ -37,6 +37,10 @@ classifiers = [
 
 # Runtime dependencies (converted to PEP 440)
 dependencies = [
+  # Faker is deliberately left without an upper bound: it is pure Python,
+  # bumps its major version several times a year, and the small API this
+  # package uses (pystr, word, email, dates, ip addresses, uuid4) has been
+  # stable across those majors. A cap would force users to pin old Fakers.
   "Faker>=37.1",
   "pydantic>=2.11,<3",
   "rstr>=3.2,<4",

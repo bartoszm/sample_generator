@@ -34,7 +34,7 @@ from .scenario_enum import (
 )
 from .SchemaGeneratorBuilder import SchemaGeneratorBuilder
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = [
     "JSONSchemaGenerator",

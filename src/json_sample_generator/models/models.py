@@ -5,7 +5,7 @@ import warnings
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union, cast
 
 from jsonref import jsonloader, replace_refs
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # Define a type for scenario override functions
 ScenarioOverrideFn = Callable[["Context"], Any]
@@ -190,8 +190,11 @@ class Schema(BaseModel):
 
 
 class Context(BaseModel):
+    model_config = ConfigDict(validate_assignment=True, extra="forbid")
+
     prop_path: str
-    data: Dict[str, Any]
+    # The result built so far: a dict, or a list for a root array schema.
+    data: Any
     schema_data: Dict[str, Any]
     schema_path: Optional[str] = None
     parent_schema: Optional[Dict[str, Any]] = None
@@ -209,7 +212,3 @@ class Context(BaseModel):
             new_rec = rec.copy(path="new.json", data={**rec.data, "x": 1})
         """
         return self.model_copy(update=updates)
-
-    class Config:
-        validate_assignment = True
-        extra = "forbid"

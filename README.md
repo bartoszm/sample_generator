@@ -189,6 +189,26 @@ Consequences:
 - Speeding up property-based tests where the array size is incidental.
 - Producing compact sample payloads for documentation or examples.
 
+## User guide: Property paths
+
+Scenario override keys, `oneof_selectors` keys and `ctx.prop_path` share one path syntax:
+
+| Path | Meaning |
+|---|---|
+| `address.city` | property `city` of property `address` |
+| `phones[0].number` | property `number` of the first element of `phones` |
+| `points[0][1]` | second element of the first element of `points` (arrays of arrays) |
+| `[0]` | first element, when the root schema is an array |
+| `["a.b"].c` | property `c` of a property named `a.b` |
+
+A property name that contains `.`, `[`, `]`, `"` or `\` is written as a JSON string in brackets; any other name is written bare. `json_sample_generator.helpers.utils.join_path` renders a path the way the generator does and `parse_path` splits it back into keys and indices.
+
+Objects and arrays are written to the result as soon as the generator enters them, so a required `{"type": "object"}` without properties yields `{}` and an array that draws zero items yields `[]`. In `scenario_only` mode a container still appears only when the scenario covers something inside it.
+
+## User guide: Nesting depth (`max_depth`)
+
+`JSONSchemaGenerator(max_depth=6)` stops descending once a path has more than six property levels; array indices do not count as a level. The limit is what ends recursive schemas (`"$ref": "#"`). When it cuts a property that is required, or an array item needed for `minItems`, the generator emits a `UserWarning` naming the path, once per `generate()` call, because the sample will not validate. Raise `max_depth` when a schema legitimately nests deeper.
+
 ## Contributing
 
 See `CONTRIBUTING.md`.

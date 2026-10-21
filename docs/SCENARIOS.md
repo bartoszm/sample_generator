@@ -13,7 +13,7 @@ Normalization: `Scenario.normalize()` converts any simple values into callables 
 
 ## The Context object
 Overrides receive a `Context` with helpful info:
-- `prop_path`: dotted path of the field (e.g., `address.city` or `phones[0].number`).
+- `prop_path`: path of the field, e.g. `address.city`, `phones[0].number` or `points[0][1]`; a property name containing `.` or `[` is quoted, as in `["a.b"].c` (see "Property paths" in the README). Override keys use the same syntax.
 - `data`: the partially built result object so far.
 - `schema_data`: the schema node for the current property.
 - `schema_path`: when the current node comes from a `$ref`, its reference path.

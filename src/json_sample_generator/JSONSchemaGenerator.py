@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import random
 import re
+import warnings
 from typing import Any, Callable, Dict, List, Optional, cast
 
 from faker import Faker
@@ -11,7 +12,7 @@ from proxytypes import LazyProxy
 
 from .DefaultValueGenerator import DefaultValueGenerator
 from .helpers import allof_merge, to_type
-from .helpers.utils import path_startswith
+from .helpers.utils import join_path, parse_path, path_startswith
 from .models import Context, Scenario, Schema
 from .SchemaGeneratorBuilder import SchemaGeneratorBuilder
 
@@ -43,6 +44,10 @@ LazyProxy.__subject__ = property(_safe_lazy_subject)
 fake = Faker()
 
 GeneratorFunctionType = Callable[[Dict[str, Any]], Callable[[], Any]]
+
+# Redraws attempted for an array item that duplicates an earlier one when
+# ``uniqueItems`` is set.
+UNIQUE_ITEMS_ATTEMPTS = 20
 
 
 class JSONSchemaGenerator:
@@ -222,10 +227,10 @@ class JSONSchemaGenerator:
         Returns:
             The generated value for this node
         """
-        dpth = ctx.prop_path.count(".")
         schema = ctx.schema_data
 
-        if dpth > self.max_depth:
+        if self._depth(ctx.prop_path) > self.max_depth:
+            self._warn_depth_cut(ctx, builder)
             return None
 
         if isinstance(ctx.schema_data, JsonRef):
@@ -269,6 +274,42 @@ class JSONSchemaGenerator:
                 return None
             val = self._default_value(schema)
             return builder.set_value_at_path(path, val)
+
+    @staticmethod
+    def _depth(path: str) -> int:
+        """Object nesting depth of *path*: the number of property keys
+        below the root. Array indices do not add a level."""
+        keys = sum(isinstance(s, str) for s in parse_path(path))
+        return max(keys - 1, 0)
+
+    def _warn_depth_cut(
+        self, ctx: Context, builder: SchemaGeneratorBuilder
+    ) -> None:
+        """Warn once per generate() when ``max_depth`` cuts a property the
+        schema requires (or an array item needed for ``minItems``)."""
+        if builder.depth_warned:
+            return
+        segments = parse_path(ctx.prop_path)
+        parent = ctx.parent_schema
+        if not segments or not hasattr(parent, "get"):
+            return
+        last = segments[-1]
+        if isinstance(last, str):
+            required = last in (parent.get("required") or [])
+        else:
+            required = last < (parent.get("minItems") or 0)
+        if not required:
+            return
+        builder.depth_warned = True
+        warnings.warn(
+            f"max_depth={self.max_depth} reached at '{ctx.prop_path}': "
+            "this required property is left out, so the sample will not "
+            "validate against the schema. Pass a larger max_depth to "
+            "JSONSchemaGenerator if the schema nests this deep. Further "
+            "cuts in this generate() call are not reported.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     def _generate_all_of(
         self, ctx: Context, scenario: Scenario, builder: SchemaGeneratorBuilder
@@ -540,17 +581,59 @@ class JSONSchemaGenerator:
         if isinstance(items, JsonRef):
             item_schema_path = items.__reference__["$ref"]
 
+        if not scenario.scenario_only:
+            builder.ensure_container(ctx.prop_path, [])
+
+        unique = bool(schema.get("uniqueItems"))
         result: List[Any] = []
         for i in range(count):
             child_ctx = ctx.copy(
-                prop_path=f"{ctx.prop_path}[{i}]",
+                prop_path=join_path(ctx.prop_path, i),
                 schema_data=items,
                 parent_schema=schema,
                 schema_path=item_schema_path or ctx.schema_path,
+                data=builder.generated,
             )
-            result.append(self._generate_node(child_ctx, scenario, builder))
+            value = self._generate_node(child_ctx, scenario, builder)
+            if unique:
+                value = self._ensure_unique_item(
+                    ctx, child_ctx, i, value, scenario, builder
+                )
+            result.append(value)
 
         return result
+
+    def _ensure_unique_item(
+        self,
+        ctx: Context,
+        child_ctx: Context,
+        index: int,
+        value: Any,
+        scenario: Scenario,
+        builder: SchemaGeneratorBuilder,
+    ) -> Any:
+        """Redraw the item at *index* while it equals an earlier item of the
+        array at ``ctx.prop_path`` (``uniqueItems``)."""
+        stored = builder.get_value_at_path(ctx.prop_path)
+        if not isinstance(stored, list):
+            return value
+        for _ in range(UNIQUE_ITEMS_ATTEMPTS):
+            current = stored[index] if index < len(stored) else value
+            if current is None or current not in stored[:index]:
+                return current
+            # Reset the slot so containers are rebuilt from scratch rather
+            # than merged with the previous draw.
+            builder.set_value_at_path(child_ctx.prop_path, None)
+            value = self._generate_node(child_ctx, scenario, builder)
+            stored = builder.get_value_at_path(ctx.prop_path)
+        warnings.warn(
+            f"uniqueItems at '{ctx.prop_path}': no value distinct from the "
+            f"earlier items could be drawn for index {index} in "
+            f"{UNIQUE_ITEMS_ATTEMPTS} attempts.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return value
 
     def _handle_object(
         self, ctx: Context, scenario: Scenario, builder: SchemaGeneratorBuilder
@@ -566,6 +649,9 @@ class JSONSchemaGenerator:
         Returns:
             Dictionary of generated property values
         """
+        if not scenario.scenario_only:
+            builder.ensure_container(ctx.prop_path, {})
+
         props = ctx.schema_data.get("properties", {})
         if props is None:
             return {}
@@ -574,7 +660,7 @@ class JSONSchemaGenerator:
         result: Dict[str, Any] = {}
 
         for k, v in props.items():
-            child_path = f"{ctx.prop_path}.{k}" if ctx.prop_path else k
+            child_path = join_path(ctx.prop_path, k)
             if scenario.scenario_only:
                 if not self._subtree_has_coverage(
                     child_path, scenario, builder
@@ -597,6 +683,7 @@ class JSONSchemaGenerator:
                 schema_data=v,
                 parent_schema=ctx.schema_data,
                 schema_path=child_schema_path,
+                data=builder.generated,
             )
             result[k] = self._generate_node(child_ctx, scenario, builder)
 

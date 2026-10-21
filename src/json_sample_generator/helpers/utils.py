@@ -14,6 +14,13 @@ PathSegment = Union[str, int]
 # recursion is required all the way down.
 DEFAULT_MAX_DEPTH = 50
 
+# How many times a schema node may recur on the current path. The first
+# recurrence switches to required members only (the cycle rule); the next
+# one is cut, with a warning when the schema requires the member. This
+# keeps required recursion with several children from branching without
+# bound.
+MAX_REENTRIES = 2
+
 
 def schema_marker(node: Any) -> Any:
     """Identity of a schema node for recursion detection: the ``$ref``

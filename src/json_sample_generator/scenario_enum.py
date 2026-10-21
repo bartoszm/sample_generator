@@ -25,7 +25,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from jsonref import JsonRef
 
 from .helpers.allof_handler import allof_merge
-from .helpers.utils import DEFAULT_MAX_DEPTH, join_path, schema_marker
+from .helpers.utils import (
+    DEFAULT_MAX_DEPTH,
+    MAX_REENTRIES,
+    join_path,
+    schema_marker,
+)
 from .models import Scenario, Schema
 
 _DEFAULT_MAX_DEPTH = DEFAULT_MAX_DEPTH
@@ -183,24 +188,31 @@ def _walk(
     out: List[VariantSite],
     seen: Dict[Tuple[str, str], int],
     ref_path: Tuple[Any, ...] = (),
+    recursive: bool = False,
 ) -> None:
     if depth > max_depth:
         return
-    marker = schema_marker(node)
-    if marker in ref_path:
-        # Recursion: the sites below were recorded at the first occurrence.
-        return
-    ref_path = ref_path + (marker,)
+    # The generator's recursion rule: a node that recurs on the path gets
+    # its required members only; a node that recurs again is cut.
+    markers = [schema_marker(node)] if isinstance(node, JsonRef) else []
     node = _unwrap(node)
     if not isinstance(node, dict):
         return
+    markers.append(schema_marker(node))
+    recurrences = max(ref_path.count(m) for m in markers)
+    if recurrences >= MAX_REENTRIES:
+        return
+    recursive = recursive or recurrences >= 1
+    ref_path = ref_path + tuple(markers)
 
     if "allOf" in node:
         try:
             merged = allof_merge(node)
         except Exception:
             merged = node
-        _walk(merged, path, depth + 1, max_depth, out, seen, ref_path)
+        _walk(
+            merged, path, depth + 1, max_depth, out, seen, ref_path, recursive
+        )
         return
 
     for kind in ("oneOf", "anyOf"):
@@ -224,11 +236,16 @@ def _walk(
                 )
             )
         for v in variants:
-            _walk(v, path, depth + 1, max_depth, out, seen, ref_path)
+            _walk(
+                v, path, depth + 1, max_depth, out, seen, ref_path, recursive
+            )
 
     props = node.get("properties")
+    required = node.get("required") or []
     if isinstance(props, dict):
         for prop_name, prop_schema in props.items():
+            if recursive and prop_name not in required:
+                continue
             child_path = join_path(path, str(prop_name))
             _walk(
                 prop_schema,
@@ -238,11 +255,23 @@ def _walk(
                 out,
                 seen,
                 ref_path,
+                recursive,
             )
 
     items = node.get("items")
-    if isinstance(items, (dict, JsonRef)):
-        _walk(items, f"{path}[*]", depth + 1, max_depth, out, seen, ref_path)
+    if isinstance(items, (dict, JsonRef)) and not (
+        recursive and (node.get("minItems") or 0) < 1
+    ):
+        _walk(
+            items,
+            f"{path}[*]",
+            depth + 1,
+            max_depth,
+            out,
+            seen,
+            ref_path,
+            recursive,
+        )
 
 
 def _site_to_regex_key(path: str) -> str:

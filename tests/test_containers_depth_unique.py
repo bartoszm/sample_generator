@@ -317,6 +317,47 @@ def test_unique_items_with_objects():
         assert len({item["k"] for item in out["items"]}) == 3
 
 
+@pytest.mark.parametrize(
+    "items, extra, size",
+    [
+        (
+            {"type": "string", "enum": ["red", "green", "blue"]},
+            {"maxItems": 10},
+            3,
+        ),
+        ({"type": "string", "enum": ["a"]}, {}, 1),
+        ({"type": "boolean"}, {"maxItems": 5}, 2),
+        ({"type": "integer", "minimum": 0, "maximum": 3}, {"maxItems": 10}, 4),
+        (
+            {"type": "integer", "exclusiveMinimum": 0, "exclusiveMaximum": 3},
+            {"maxItems": 10},
+            2,
+        ),
+    ],
+)
+def test_unique_items_length_is_capped_at_the_domain_size(items, extra, size):
+    schema = _obj(
+        xs={"type": "array", "uniqueItems": True, "items": items, **extra}
+    )
+    outputs = _generate_many(schema, n=50)
+    assert all(len(out["xs"]) <= size for out in outputs)
+    assert any(len(out["xs"]) == size for out in outputs)
+
+
+def test_unique_items_keep_large_integers_distinct():
+    schema = _obj(
+        xs={
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "uniqueItems": True,
+            "items": {"enum": [2**70, 2**70 + 1]},
+        }
+    )
+    for out in _generate_many(schema, n=10):
+        assert sorted(out["xs"]) == [2**70, 2**70 + 1]
+
+
 def test_unique_items_unsatisfiable_raises():
     schema = _obj(
         xs={
@@ -412,19 +453,88 @@ def test_branching_optional_recursion_is_cheap():
     assert out["left"]["left"] == {"v": out["left"]["left"]["v"]}
 
 
-def test_required_recursion_hits_the_cap_and_warns():
+def test_required_recursion_is_cut_after_two_recurrences_and_warns():
     schema = {
         "type": "object",
         "properties": {"child": {"$ref": "#"}},
         "required": ["child"],
     }
     gen = JSONSchemaGenerator(Schema(data=schema, base_uri="file://rec.json"))
-    with pytest.warns(UserWarning, match="max_depth=50"):
+    with pytest.warns(UserWarning, match="recursion limit"):
         out = gen.generate()
-    levels, node = 0, out
-    while "child" in node:
-        node, levels = node["child"], levels + 1
-    assert levels >= 50
+    # child: first occurrence of "#" (full); child.child: second (required
+    # members only); child.child.child: third, cut
+    assert out == {"child": {"child": {}}}
+
+
+BRANCHING_REQUIRED = {
+    "type": "object",
+    "required": ["root"],
+    "properties": {"root": {"$ref": "#/$defs/T"}},
+    "$defs": {
+        "T": {
+            "type": "object",
+            "required": ["c0", "c1"],
+            "properties": {
+                "c0": {"$ref": "#/$defs/T"},
+                "c1": {"$ref": "#/$defs/T"},
+            },
+        }
+    },
+}
+
+
+def test_branching_required_recursion_warns_quickly():
+    gen = JSONSchemaGenerator(
+        Schema(data=BRANCHING_REQUIRED, base_uri="file://rec.json")
+    )
+    started = time.perf_counter()
+    with pytest.warns(UserWarning, match="recursion limit"):
+        out = gen.generate()
+    assert time.perf_counter() - started < 1
+    assert set(out["root"]) == {"c0", "c1"}
+
+
+RECURSIVE_ONEOF = {
+    "type": "object",
+    "required": ["root"],
+    "properties": {"root": {"$ref": "#/$defs/T"}},
+    "$defs": {
+        "T": {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "required": ["v"],
+                    "properties": {"v": {"type": "integer"}},
+                },
+                {
+                    "type": "object",
+                    "required": ["c0", "c1", "c2"],
+                    "properties": {
+                        "c0": {"$ref": "#/$defs/T"},
+                        "c1": {"$ref": "#/$defs/T"},
+                        "c2": {"$ref": "#/$defs/T"},
+                    },
+                },
+            ]
+        }
+    },
+}
+
+
+def test_recursive_oneof_escapes_to_the_leaf():
+    validator = Draft7Validator(RECURSIVE_ONEOF)
+    gen = JSONSchemaGenerator(
+        Schema(data=RECURSIVE_ONEOF, base_uri="file://rec.json")
+    )
+    for seed in range(30):
+        random.seed(seed)
+        started = time.perf_counter()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            out = gen.generate()
+        assert time.perf_counter() - started < 1
+        assert not list(validator.iter_errors(out)), (seed, out)
 
 
 def test_hard_cap_can_be_lowered_and_warns_once():

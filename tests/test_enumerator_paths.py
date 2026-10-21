@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from json_sample_generator import JSONSchemaGenerator
 from json_sample_generator.break_enum import collect_break_sites
 from json_sample_generator.breaker import SampleBreaker
+from json_sample_generator.helpers.utils import parse_path
 from json_sample_generator.models import Schema
 from json_sample_generator.models.break_models import (
     BreakKind,
@@ -64,23 +67,72 @@ def test_break_sites_use_quoted_keys_and_apply():
     }
 
 
-def test_enumerators_stop_at_recursion():
-    schema = Schema(
-        data={
-            "type": "object",
-            "properties": {
-                "kind": {"oneOf": [{"const": "x"}, {"const": "y"}]},
-                "left": {"$ref": "#"},
-                "right": {"$ref": "#"},
-            },
-        },
-        base_uri="file://rec.json",
-    )
+RECURSIVE = {
+    "type": "object",
+    "required": ["kind", "next"],
+    "properties": {
+        "kind": {"oneOf": [{"const": "x"}, {"const": "y"}]},
+        "next": {"$ref": "#"},
+        "extra": {"oneOf": [{"const": 1}, {"const": 2}]},
+    },
+}
+
+
+def test_enumerators_mirror_the_generator_recursion_rule():
+    # Schema.from_raw_data resolves the $ref, so the walkers really recurse.
+    schema = Schema.from_raw_data(RECURSIVE, "file://rec.json")
     started = time.perf_counter()
-    variant_sites = collect_variant_sites(schema)
-    break_sites = collect_break_sites(schema)
+    variant_paths = {s.path for s in collect_variant_sites(schema)}
+    break_paths = {s.path for s in collect_break_sites(schema)}
     assert time.perf_counter() - started < 2
-    assert [s.path for s in variant_sites] == ["kind"]
-    assert all(
-        s.path.count("left") + s.path.count("right") <= 1 for s in break_sites
+    # next: first occurrence of "#", walked in full; next.next: second,
+    # required members only (so no next.next.extra); next.next.next: cut
+    assert variant_paths == {
+        "kind",
+        "extra",
+        "next.kind",
+        "next.extra",
+        "next.next.kind",
+    }
+    assert "next.next.kind" in break_paths
+    assert not any(
+        p.startswith("next.next.next") or p == "next.next.extra"
+        for p in break_paths
     )
+    # ...which is exactly what the generator produces (it resolves the
+    # refs itself; an already-resolved recursive schema would make jsonref
+    # recurse without end)
+    gen = JSONSchemaGenerator(
+        Schema(data=RECURSIVE, base_uri="file://rec.json")
+    )
+    with pytest.warns(UserWarning, match="recursion limit"):
+        out = gen.generate()
+    assert set(out["next"]) == {"kind", "next", "extra"}
+    assert set(out["next"]["next"]) == {"kind"}
+
+
+def test_enumerators_prune_optional_recursion():
+    raw = {
+        "type": "object",
+        "properties": {
+            "kind": {"oneOf": [{"const": "x"}, {"const": "y"}]},
+            "left": {"$ref": "#"},
+            "right": {"$ref": "#"},
+        },
+    }
+    schema = Schema.from_raw_data(raw, "file://rec.json")
+    # left/right: first occurrence, walked in full; left.left etc.: second,
+    # required members only, and nothing is required, so no deeper sites
+    assert {s.path for s in collect_variant_sites(schema)} == {
+        "kind",
+        "left.kind",
+        "right.kind",
+    }
+    assert all(
+        len(parse_path(s.path)) <= 2 for s in collect_break_sites(schema)
+    )
+    out = JSONSchemaGenerator(
+        Schema(data=raw, base_uri="file://rec.json")
+    ).generate()
+    assert "kind" in out["left"]
+    assert out["left"]["left"] == {} and "kind" not in out["left"]["left"]

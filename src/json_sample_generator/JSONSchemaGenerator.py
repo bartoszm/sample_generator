@@ -58,6 +58,15 @@ GeneratorFunctionType = Callable[[Dict[str, Any]], Callable[[], Any]]
 UNIQUE_ITEMS_ATTEMPTS = 64
 
 
+def _ordinal(n: int) -> str:
+    """``1st``, ``2nd``, ``3rd``, ``4th``, ``11th``..."""
+    if 10 <= n % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
 class _NoDistinctItem(Exception):
     """Raised inside ``_ensure_unique_item`` when no value distinct from
     the earlier items can be drawn; ``_handle_array`` decides whether that
@@ -338,7 +347,7 @@ class JSONSchemaGenerator:
             ctx,
             builder,
             f"recursion limit reached (a schema node occurs for the "
-            f"{MAX_REENTRIES + 1}rd time on the path)",
+            f"{_ordinal(MAX_REENTRIES + 1)} time on the path)",
         )
         return True
 

@@ -16,6 +16,7 @@ from .helpers import allof_merge, to_type
 from .helpers.utils import (
     DEFAULT_MAX_DEPTH,
     MAX_REENTRIES,
+    allof_ref_markers,
     join_path,
     parse_path,
     path_startswith,
@@ -426,14 +427,44 @@ class JSONSchemaGenerator:
         Returns:
             The generated value
         """
-        result = self.allof_merger(ctx.schema_data)
         # Use the original allOf schema (with potential JsonRef children) as the parent schema
         origin_parent = ctx.schema_data
+        # The merged schema is a fresh dict: carry the $ref markers of the
+        # parts so the recursion rule and the re-entry limit see through it.
+        markers = allof_ref_markers(origin_parent)
+        for marker in markers:
+            if self._reentry_cut(ctx, marker, builder):
+                return None
+        recursive = ctx.recursive or any(m in ctx.ref_path for m in markers)
+        result = self.allof_merger(origin_parent)
         return self._generate_node(
-            ctx.copy(schema_data=result, parent_schema=origin_parent),
+            ctx.copy(
+                schema_data=result,
+                parent_schema=origin_parent,
+                ref_path=ctx.ref_path + tuple(markers),
+                recursive=recursive,
+            ),
             scenario,
             builder,
         )
+
+    @staticmethod
+    def _property_schema_path(value: Any, inherited: Optional[str]) -> Any:
+        """The ``schema_path`` for a property or item schema: its ``$ref``
+        when it is a reference, the last ``$ref`` part when it is an
+        ``allOf`` of references (a re-declared or refined reference), else
+        the inherited path."""
+        if isinstance(value, JsonRef):
+            return value.__reference__["$ref"]
+        if isinstance(value, dict) and isinstance(value.get("allOf"), list):
+            refs = [
+                part.__reference__["$ref"]
+                for part in value["allOf"]
+                if isinstance(part, JsonRef)
+            ]
+            if refs:
+                return refs[-1]
+        return inherited
 
     def _generate_any_of(
         self, ctx: Context, scenario: Scenario, builder: SchemaGeneratorBuilder
@@ -482,8 +513,19 @@ class JSONSchemaGenerator:
             and not k.startswith("x-")
         }
         if not siblings:
+            # Recurse into the branch itself (keeps $ref identity and
+            # schema_path), still leaving out what only the other oneOf
+            # branches require.
+            excluded = ctx.excluded_properties
+            if kind == "oneOf":
+                flat = self.allof_merger({"allOf": [selected]})
+                excluded = excluded + self._required_only_elsewhere(
+                    schemas, selected, flat if isinstance(flat, dict) else {}
+                )
             return self._generate_node(
-                ctx.copy(schema_data=selected), scenario, builder
+                ctx.copy(schema_data=selected, excluded_properties=excluded),
+                scenario,
+                builder,
             )
 
         merged = self.allof_merger({"allOf": [siblings, selected]})
@@ -814,10 +856,9 @@ class JSONSchemaGenerator:
         else:
             count = random.randint(min_items, max_items)
 
-        # Derive schema_path for array items when items is a $ref
-        item_schema_path: Optional[str] = None
-        if isinstance(items, JsonRef):
-            item_schema_path = items.__reference__["$ref"]
+        # Derive schema_path for array items when items is a $ref (or an
+        # allOf of refs)
+        item_schema_path = self._property_schema_path(items, None)
 
         # The root container is never an uncovered optional field, so it
         # is written even in scenario_only mode.
@@ -835,6 +876,7 @@ class JSONSchemaGenerator:
                 data=builder.generated,
                 ref_path=child_markers,
                 recursive=recursive,
+                excluded_properties=(),
             )
             value = self._generate_node(child_ctx, scenario, builder)
             if unique:
@@ -1022,12 +1064,9 @@ class JSONSchemaGenerator:
                     child_path, scenario, builder
                 ):
                     continue
-            # Inherit schema_path by default; override if this property is a $ref
-            child_schema_path = (
-                v.__reference__["$ref"]
-                if isinstance(v, JsonRef)
-                else ctx.schema_path
-            )
+            # Inherit schema_path by default; override if this property is
+            # a $ref (or an allOf of refs)
+            child_schema_path = self._property_schema_path(v, ctx.schema_path)
 
             child_ctx = ctx.copy(
                 prop_path=child_path,

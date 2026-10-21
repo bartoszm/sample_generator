@@ -28,6 +28,7 @@ from .helpers.allof_handler import allof_merge
 from .helpers.utils import (
     DEFAULT_MAX_DEPTH,
     MAX_REENTRIES,
+    allof_ref_markers,
     join_path,
     schema_marker,
 )
@@ -206,6 +207,12 @@ def _walk(
     ref_path = ref_path + tuple(markers)
 
     if "allOf" in node:
+        # The merged schema is a fresh dict: carry the parts' $ref markers.
+        part_markers = allof_ref_markers(node)
+        if any(ref_path.count(m) >= MAX_REENTRIES for m in part_markers):
+            return
+        recursive = recursive or any(m in ref_path for m in part_markers)
+        ref_path = ref_path + tuple(part_markers)
         try:
             merged = allof_merge(node)
         except Exception:

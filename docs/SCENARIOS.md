@@ -163,7 +163,10 @@ These common idioms therefore work:
 
 When the parent and the branch both define a property, the two
 definitions are combined (`allOf`), so a branch may refine a parent
-property with a `pattern`, a `maximum`, a `const`, and so on.
+property with a `pattern`, a `maximum`, a `const`, and so on. A property
+re-declared with the same `$ref` keeps that single reference, and a
+property defined as an `allOf` of references takes its `schema_path` from
+the last reference.
 
 For `oneOf` the instance must match exactly one branch. The generator
 guarantees that for branches that differ in `required` (including
@@ -178,8 +181,8 @@ more than one branch.
 
 A parent that holds nothing but the branch list and annotations
 (`discriminator`, `title`, `description`, ...) is generated from the
-branch alone, exactly as before, so `$ref` branches keep their
-`schema_path`.
+branch alone, so `$ref` branches keep their `schema_path`; the properties
+that only the other `oneOf` branches require are left out there too.
 
 
 ## Reusing and composing scenarios

@@ -97,8 +97,12 @@ def allof_merge(
                 if isinstance(dst_props, dict) and isinstance(v, dict):
                     for pk, pv in v.items():
                         existing = dst_props.get(pk)
-                        if existing is None or existing is pv:
-                            # preserve JsonRef wrappers
+                        same_ref = ref_key(existing) is not None and ref_key(
+                            existing
+                        ) == ref_key(pv)
+                        if existing is None or existing is pv or same_ref:
+                            # preserve JsonRef wrappers; a property
+                            # re-declared with the same $ref stays one ref
                             dst_props[pk] = pv
                         else:
                             # Both parts constrain this property: keep

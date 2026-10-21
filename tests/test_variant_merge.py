@@ -404,3 +404,162 @@ def test_openapi_discriminator_shape_with_shared_properties():
     for out in outputs:
         assert "name" in out
         assert ("bark" in out) != ("meow" in out)
+
+
+# ---------------------------------------------------------------------------
+# Round 2: allOf wrappers and the recursion rule, schema_path, exclusivity
+# without parent keywords, array items
+# ---------------------------------------------------------------------------
+import time  # noqa: E402
+
+from json_sample_generator.break_enum import collect_break_sites  # noqa: E402
+from json_sample_generator.scenario_enum import (  # noqa: E402
+    collect_variant_sites,
+)
+
+REFINED_NODE = {
+    "definitions": {
+        "Base": {
+            "type": "object",
+            "required": ["v"],
+            "properties": {
+                "v": {"type": "string"},
+                "next": {"$ref": "#/definitions/Node"},
+            },
+        },
+        "Node": {
+            "allOf": [
+                {"$ref": "#/definitions/Base"},
+                {
+                    "properties": {
+                        "next": {"$ref": "#/definitions/Node"},
+                        "kind": {"oneOf": [{"const": "x"}, {"const": "y"}]},
+                    }
+                },
+            ]
+        },
+    },
+    "type": "object",
+    "required": ["root"],
+    "properties": {"root": {"$ref": "#/definitions/Node"}},
+}
+
+
+def test_recursive_ref_redeclared_through_allof_stops_early():
+    gen = JSONSchemaGenerator(
+        Schema(data=REFINED_NODE, base_uri="file://node.json")
+    )
+    started = time.perf_counter()
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        out = gen.generate()
+    assert time.perf_counter() - started < 1
+    # root.next is the first recurrence of Node: required members only,
+    # so the optional chain stops there
+    assert "v" in out["root"]["next"]
+    assert "next" not in out["root"]["next"]
+    # the enumerators see the same thing
+    resolved = Schema.from_raw_data(REFINED_NODE, "file://node.json")
+    started = time.perf_counter()
+    assert [s.path for s in collect_variant_sites(resolved)] == ["root.kind"]
+    assert len(collect_break_sites(resolved)) < 10
+    assert time.perf_counter() - started < 1
+
+
+def test_redeclared_ref_property_keeps_schema_path():
+    schema = {
+        "definitions": {
+            "Pet": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            }
+        },
+        "type": "object",
+        "allOf": [
+            {"properties": {"pet": {"$ref": "#/definitions/Pet"}}},
+            {"properties": {"pet": {"$ref": "#/definitions/Pet"}}},
+            {
+                "properties": {
+                    "other": {
+                        "allOf": [
+                            {"$ref": "#/definitions/Pet"},
+                            {"description": "a refined reference"},
+                        ]
+                    }
+                }
+            },
+        ],
+    }
+    seen = {}
+
+    def capture(key):
+        def _fn(ctx):
+            seen[key] = ctx.schema_path
+            return "Rex"
+
+        return _fn
+
+    scenario = Scenario(
+        name="s",
+        overrides={"pet.name": capture("pet"), "other.name": capture("other")},
+    )
+    out = JSONSchemaGenerator(
+        Schema(data=schema, base_uri="file://pets.json")
+    ).generate(scenario)
+    assert out["pet"] == {"name": "Rex"} and out["other"] == {"name": "Rex"}
+    assert seen["pet"].endswith("#/definitions/Pet")
+    assert seen["other"].endswith("#/definitions/Pet")
+
+
+def test_allof_merge_keeps_a_single_ref_when_redeclared():
+    schema = Schema.from_raw_data(
+        {
+            "definitions": {"Pet": {"type": "object"}},
+            "allOf": [
+                {"properties": {"pet": {"$ref": "#/definitions/Pet"}}},
+                {"properties": {"pet": {"$ref": "#/definitions/Pet"}}},
+            ],
+        },
+        "file://pets.json",
+    )
+    merged = allof_merge(schema.data)
+    assert "allOf" not in merged["properties"]["pet"]
+
+
+REF_ONLY_ONEOF = {
+    "oneOf": [{"$ref": "#/definitions/X"}, {"$ref": "#/definitions/Y"}],
+    "definitions": {
+        "Base": {
+            "type": "object",
+            "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+        },
+        "X": {"allOf": [{"$ref": "#/definitions/Base"}, {"required": ["a"]}]},
+        "Y": {"allOf": [{"$ref": "#/definitions/Base"}, {"required": ["b"]}]},
+    },
+}
+
+
+def test_exclusivity_applies_without_parent_keywords():
+    outputs = _generate_many(REF_ONLY_ONEOF, n=50, base_uri="file://xy.json")
+    assert {frozenset(out) for out in outputs} == {
+        frozenset({"a"}),
+        frozenset({"b"}),
+    }
+
+
+def test_excluded_properties_do_not_leak_into_array_items():
+    schema = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {"c": {"type": "string"}, "d": {"type": "string"}},
+        },
+        "oneOf": [{"required": ["c"]}, {"minItems": 1, "maxItems": 1}],
+    }
+    out = JSONSchemaGenerator(Schema(data=schema)).generate(
+        Scenario(name="s", oneof_selectors={"": 1})
+    )
+    assert len(out) == 1 and set(out[0]) == {"c", "d"}

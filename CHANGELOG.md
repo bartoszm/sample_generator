@@ -41,9 +41,12 @@ The format is based on Keep a Changelog.
 - `oneOf`/`anyOf` branches are generated together with the keywords next
   to them (`type`, `properties`, `required`, `format`, ...), so branches
   that only add `required` or `format` work. For `oneOf`, properties that
-  only the other branches require are left out. `allOf` (and the
-  parent/branch merge) keeps both definitions of a property defined in
-  several parts, so a part can refine another's property.
+  only the other branches require are left out, whether or not the parent
+  carries keywords of its own. `allOf` (and the parent/branch merge) keeps
+  both definitions of a property defined in several parts, so a part can
+  refine another's property; a property re-declared with the same `$ref`
+  stays a single reference, which keeps its `schema_path` and the
+  recursion rule intact.
 
 ## [0.5.0] - 2026-05-07
 

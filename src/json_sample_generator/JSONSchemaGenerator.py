@@ -289,7 +289,11 @@ class JSONSchemaGenerator:
         return schema
 
     def _generate_node(
-        self, ctx: Context, scenario: Scenario, builder: SchemaGeneratorBuilder
+        self,
+        ctx: Context,
+        scenario: Scenario,
+        builder: SchemaGeneratorBuilder,
+        via_ref: bool = False,
     ) -> Any:
         """
         Generate a node in the JSON sample based on the schema and context.
@@ -298,6 +302,8 @@ class JSONSchemaGenerator:
             ctx: The current generation context
             scenario: The scenario to use for this generation
             builder: The builder instance for this generation
+            via_ref: True when the node is the body of a ``$ref`` that was
+                just resolved (its own marker is already on the path)
 
         Returns:
             The generated value for this node
@@ -320,7 +326,7 @@ class JSONSchemaGenerator:
                 ref_path=ctx.ref_path + (ref,),
                 recursive=ctx.recursive or ref in ctx.ref_path,
             )
-            return self._generate_node(ctx, scenario, builder)
+            return self._generate_node(ctx, scenario, builder, via_ref=True)
 
         path = ctx.prop_path
 
@@ -335,7 +341,7 @@ class JSONSchemaGenerator:
                 return None
 
         if "allOf" in schema:
-            return self._generate_all_of(ctx, scenario, builder)
+            return self._generate_all_of(ctx, scenario, builder, via_ref)
         if "anyOf" in schema:
             return self._generate_any_of(ctx, scenario, builder)
         if "oneOf" in schema:
@@ -414,7 +420,11 @@ class JSONSchemaGenerator:
         )
 
     def _generate_all_of(
-        self, ctx: Context, scenario: Scenario, builder: SchemaGeneratorBuilder
+        self,
+        ctx: Context,
+        scenario: Scenario,
+        builder: SchemaGeneratorBuilder,
+        via_ref: bool = False,
     ):
         """
         Generate a node that satisfies all schemas in an allOf array.
@@ -429,9 +439,15 @@ class JSONSchemaGenerator:
         """
         # Use the original allOf schema (with potential JsonRef children) as the parent schema
         origin_parent = ctx.schema_data
-        # The merged schema is a fresh dict: carry the $ref markers of the
-        # parts so the recursion rule and the re-entry limit see through it.
-        markers = allof_ref_markers(origin_parent)
+        # The merged schema is a fresh dict. For an inline allOf (a property
+        # value such as {"allOf": [$ref Node, ...]}, user-written or built
+        # by allof_merge for a property defined twice) the $ref parts are
+        # the edges recursion travels, so their markers are carried so the
+        # recursion rule and the re-entry limit see through the merge. The
+        # body of a type reached through a $ref already has its own marker
+        # on the path; its parts are mixins (a shared Base) and must not
+        # count, or OpenAPI inheritance would look like a cycle.
+        markers = [] if via_ref else allof_ref_markers(origin_parent)
         for marker in markers:
             if self._reentry_cut(ctx, marker, builder):
                 return None

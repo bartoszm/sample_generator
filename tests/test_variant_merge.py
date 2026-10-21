@@ -563,3 +563,61 @@ def test_excluded_properties_do_not_leak_into_array_items():
         Scenario(name="s", oneof_selectors={"": 1})
     )
     assert len(out) == 1 and set(out[0]) == {"c", "d"}
+
+
+# ---------------------------------------------------------------------------
+# Round 3: a base shared through allOf by non-recursive types is not a cycle
+# ---------------------------------------------------------------------------
+def _inherits(child_ref=None):
+    part = {"type": "object"}
+    if child_ref:
+        part = {"required": ["c"], "properties": {"c": {"$ref": child_ref}}}
+    return {"allOf": [{"$ref": "#/definitions/Base"}, part]}
+
+
+INHERITANCE_CHAIN = {
+    "definitions": {
+        "Base": {
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+                "id": {"type": "string"},
+                "note": {"type": "string"},
+                "kind": {"oneOf": [{"const": "x"}, {"const": "y"}]},
+            },
+        },
+        "A": _inherits("#/definitions/B"),
+        "B": _inherits("#/definitions/C"),
+        "C": _inherits("#/definitions/D"),
+        "D": _inherits(),
+    },
+    "type": "object",
+    "required": ["a"],
+    "properties": {"a": {"$ref": "#/definitions/A"}},
+}
+
+
+def test_shared_base_through_allof_is_not_a_cycle():
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        outputs = _generate_many(
+            INHERITANCE_CHAIN, n=30, base_uri="file://chain.json"
+        )
+    for out in outputs:
+        node = out["a"]
+        for _ in range(3):
+            assert {"id", "note", "kind"} <= set(node)
+            node = node["c"]
+        assert {"id", "note", "kind"} <= set(node) and "c" not in node
+
+    resolved = Schema.from_raw_data(INHERITANCE_CHAIN, "file://chain.json")
+    assert {s.path for s in collect_variant_sites(resolved)} == {
+        "a.kind",
+        "a.c.kind",
+        "a.c.c.kind",
+        "a.c.c.c.kind",
+    }
+    break_paths = {s.path for s in collect_break_sites(resolved)}
+    assert {"a.c.c.c", "a.c.c.c.id", "a.c.c.c.note"} <= break_paths

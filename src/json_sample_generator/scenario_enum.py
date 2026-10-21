@@ -195,7 +195,8 @@ def _walk(
         return
     # The generator's recursion rule: a node that recurs on the path gets
     # its required members only; a node that recurs again is cut.
-    markers = [schema_marker(node)] if isinstance(node, JsonRef) else []
+    via_ref = isinstance(node, JsonRef)
+    markers = [schema_marker(node)] if via_ref else []
     node = _unwrap(node)
     if not isinstance(node, dict):
         return
@@ -207,8 +208,10 @@ def _walk(
     ref_path = ref_path + tuple(markers)
 
     if "allOf" in node:
-        # The merged schema is a fresh dict: carry the parts' $ref markers.
-        part_markers = allof_ref_markers(node)
+        # The merged schema is a fresh dict: carry the parts' $ref markers
+        # for an inline allOf. The body of a type reached through a $ref
+        # has its own marker already; its parts are mixins, not edges.
+        part_markers = [] if via_ref else allof_ref_markers(node)
         if any(ref_path.count(m) >= MAX_REENTRIES for m in part_markers):
             return
         recursive = recursive or any(m in ref_path for m in part_markers)

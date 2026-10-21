@@ -96,6 +96,7 @@ def _json_key(value: Any) -> Any:
         )
     return ("other", repr(value))
 
+
 # Keywords next to a oneOf/anyOf that do not constrain the instance and
 # therefore need not be merged into the chosen branch. Vendor extensions
 # (``x-...``) are treated the same way.
@@ -463,9 +464,11 @@ class JSONSchemaGenerator:
         ``schema_path`` tracking.
 
         For ``oneOf`` the instance must match exactly one branch, so the
-        properties that only the other branches require are left out
-        unless the scenario names them (see
-        :meth:`_drop_properties_of_other_branches`).
+        properties that only the other branches require are recorded on
+        the context (``excluded_properties``) and left out by the object
+        handler unless the merged schema requires them or the scenario
+        names them. Their definitions stay in place, so a nested
+        ``oneOf`` that requires one of them can still generate it.
         """
         parent = ctx.schema_data
         schemas = parent.get(kind, [])
@@ -484,62 +487,40 @@ class JSONSchemaGenerator:
             )
 
         merged = self.allof_merger({"allOf": [siblings, selected]})
+        excluded = ctx.excluded_properties
         if kind == "oneOf":
-            self._drop_properties_of_other_branches(
-                ctx, merged, schemas, selected, scenario, builder
+            excluded = excluded + self._required_only_elsewhere(
+                schemas, selected, merged
             )
 
         updates: Dict[str, Any] = {
             "schema_data": merged,
             "parent_schema": parent,
+            "excluded_properties": excluded,
         }
         if isinstance(selected, JsonRef):
             updates["schema_path"] = selected.__reference__["$ref"]
         return self._generate_node(ctx.copy(**updates), scenario, builder)
 
-    def _drop_properties_of_other_branches(
-        self,
-        ctx: Context,
-        merged: Dict[str, Any],
-        schemas: List[Any],
-        selected: Any,
-        scenario: Scenario,
-        builder: SchemaGeneratorBuilder,
-    ) -> None:
-        """Remove from ``merged["properties"]`` the properties that only
-        the non-selected ``oneOf`` branches require.
-
-        Generating them would make the instance satisfy more than one
-        branch and fail ``oneOf``. A property is kept when the merged
-        schema requires it or when the scenario names it (override,
-        ``default_data`` or selector), since that is an explicit request.
-        """
-        props = merged.get("properties")
-        if not isinstance(props, dict):
-            return
+    def _required_only_elsewhere(
+        self, schemas: List[Any], selected: Any, merged: Dict[str, Any]
+    ) -> Tuple[str, ...]:
+        """Names the non-selected ``oneOf`` branches require that the
+        merged schema does not. Each branch is flattened through the
+        allOf merger, so ``required`` nested in ``allOf`` and behind
+        ``$ref`` counts too."""
         required = set(merged.get("required") or [])
-        drop = set()
+        names: List[str] = []
         for branch in schemas:
             if branch is selected:
                 continue
-            node = (
-                branch.__subject__ if isinstance(branch, JsonRef) else branch
-            )
-            if not isinstance(node, dict):
+            flat = self.allof_merger({"allOf": [branch]})
+            if not isinstance(flat, dict):
                 continue
-            for name in node.get("required") or []:
-                if name in required or name not in props:
-                    continue
-                child_path = join_path(ctx.prop_path, name)
-                if self._should_include_optional(
-                    child_path, scenario, builder
-                ):
-                    continue
-                drop.add(name)
-        if drop:
-            merged["properties"] = {
-                k: v for k, v in props.items() if k not in drop
-            }
+            for name in flat.get("required") or []:
+                if name not in required and name not in names:
+                    names.append(name)
+        return tuple(names)
 
     def _resolve_variant(
         self,
@@ -1022,6 +1003,9 @@ class JSONSchemaGenerator:
         )
         child_markers = ctx.ref_path + (schema_marker(ctx.schema_data),)
         required_set = set(ctx.schema_data.get("required") or [])
+        # Properties that only the other oneOf branches require are left
+        # out unless this object requires them or the scenario names them.
+        excluded = set(ctx.excluded_properties)
         result: Dict[str, Any] = {}
 
         for k, v in props.items():
@@ -1031,9 +1015,9 @@ class JSONSchemaGenerator:
                     child_path, scenario, builder
                 ):
                     continue
-            elif (
-                scenario.minimal_mode or recursive
-            ) and k not in required_set:
+            elif k not in required_set and (
+                scenario.minimal_mode or recursive or k in excluded
+            ):
                 if not self._should_include_optional(
                     child_path, scenario, builder
                 ):
@@ -1053,6 +1037,7 @@ class JSONSchemaGenerator:
                 data=builder.generated,
                 ref_path=child_markers,
                 recursive=recursive,
+                excluded_properties=(),
             )
             result[k] = self._generate_node(child_ctx, scenario, builder)
 

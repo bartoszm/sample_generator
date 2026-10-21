@@ -161,12 +161,25 @@ These common idioms therefore work:
 {"type": "string", "oneOf": [{"format": "ipv4"}, {"format": "ipv6"}]}
 ```
 
-For `oneOf` the instance must match exactly one branch, so a property that
-only the *other* branches require is left out of the generated object,
-unless an override, `default_data` or a selector names it. A parent that
-holds nothing but the branch list and annotations (`discriminator`,
-`title`, `description`, ...) is generated from the branch alone, exactly
-as before, so `$ref` branches keep their `schema_path`.
+When the parent and the branch both define a property, the two
+definitions are combined (`allOf`), so a branch may refine a parent
+property with a `pattern`, a `maximum`, a `const`, and so on.
+
+For `oneOf` the instance must match exactly one branch. The generator
+guarantees that for branches that differ in `required` (including
+`required` nested in their `allOf` or behind `$ref`): a property that only
+the *other* branches require is left out of the generated object, unless
+the merged schema requires it or an override, `default_data` or a selector
+names it. Branches that differ in other ways are **not** checked for
+exclusivity, since the generator does not validate: with `{"type":
+"number"}` next to `{"type": "integer"}`, overlapping numeric ranges, or
+`{"type": "object"}` next to `{"required": ["x"]}`, the sample may satisfy
+more than one branch.
+
+A parent that holds nothing but the branch list and annotations
+(`discriminator`, `title`, `description`, ...) is generated from the
+branch alone, exactly as before, so `$ref` branches keep their
+`schema_path`.
 
 
 ## Reusing and composing scenarios

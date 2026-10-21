@@ -9,9 +9,12 @@ def allof_merge(
     """
     Shallowly merge a schema with allOf by traversing and flattening parent
     chains (including nested allOf and $ref). Later entries override earlier
-    ones at the top level. 'properties' is merged by shallow key union; 'required'
-    lists are unioned while preserving order. JsonRef instances within property
-    values are preserved (no deep copying).
+    ones at the top level. 'properties' is merged by key union; when two
+    parts define the same property, both definitions are kept as an
+    ``allOf`` so that a later part can refine an earlier one (a ``pattern``
+    or ``maximum`` on top of a ``type``). 'required' lists are unioned
+    while preserving order. JsonRef instances within property values are
+    preserved (no deep copying).
 
     Deduplication:
     - Repeated $ref parents are merged only once (by $ref string).
@@ -93,8 +96,14 @@ def allof_merge(
                 dst_props = dst.setdefault("properties", {})
                 if isinstance(dst_props, dict) and isinstance(v, dict):
                     for pk, pv in v.items():
-                        # override by last; preserve JsonRef wrappers
-                        dst_props[pk] = pv
+                        existing = dst_props.get(pk)
+                        if existing is None or existing is pv:
+                            # preserve JsonRef wrappers
+                            dst_props[pk] = pv
+                        else:
+                            # Both parts constrain this property: keep
+                            # both, the way JSON Schema evaluates them.
+                            dst_props[pk] = {"allOf": [existing, pv]}
                 else:
                     # Replace if shapes differ
                     dst["properties"] = v

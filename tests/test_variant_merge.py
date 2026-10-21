@@ -5,15 +5,17 @@ are left out."""
 from __future__ import annotations
 
 import random
+import re
 
 from faker import Faker
 from jsonschema import Draft7Validator
 
 from json_sample_generator import JSONSchemaGenerator
+from json_sample_generator.helpers.allof_handler import allof_merge
 from json_sample_generator.models import Scenario, Schema
 
 
-def _generate_many(schema, n=30, scenario=None, base_uri=None):
+def _generate_many(schema, n=30, scenario=None, base_uri=None, validate=True):
     gen = JSONSchemaGenerator(Schema(data=schema, base_uri=base_uri))
     validator = Draft7Validator(
         schema, format_checker=Draft7Validator.FORMAT_CHECKER
@@ -23,8 +25,9 @@ def _generate_many(schema, n=30, scenario=None, base_uri=None):
         random.seed(seed)
         Faker.seed(seed)
         out = gen.generate(scenario)
-        errors = [e.message for e in validator.iter_errors(out)]
-        assert not errors, (seed, out, errors)
+        if validate:
+            errors = [e.message for e in validator.iter_errors(out)]
+            assert not errors, (seed, out, errors)
         outputs.append(out)
     return outputs
 
@@ -252,3 +255,152 @@ def test_ref_branch_without_sibling_keywords_is_unchanged():
     for out in outputs:
         assert out["method"] == {"iban": "DE00"}
     assert seen and all(p.endswith("#/definitions/Bank") for p in seen)
+
+
+# ---------------------------------------------------------------------------
+# Review cases: required inside allOf, nested oneOf, refined properties
+# ---------------------------------------------------------------------------
+def test_pruning_sees_required_nested_in_allof():
+    schema = {
+        "type": "object",
+        "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+        "oneOf": [
+            {"allOf": [{"required": ["a"]}]},
+            {"allOf": [{"required": ["b"]}]},
+        ],
+    }
+    outputs = _generate_many(schema, n=50)
+    assert {frozenset(out) for out in outputs} == {
+        frozenset({"a"}),
+        frozenset({"b"}),
+    }
+
+
+NESTED = {
+    "type": "object",
+    "properties": {
+        "a": {"type": "string"},
+        "b": {"type": "string"},
+        "c": {"type": "string"},
+    },
+    "oneOf": [
+        {
+            "required": ["a"],
+            "oneOf": [{"required": ["b"]}, {"required": ["c"]}],
+        },
+        {"required": ["c"]},
+    ],
+}
+
+
+def test_nested_oneof_can_require_a_property_the_outer_oneof_excluded():
+    # The outer pass excludes "c" (only the other branch requires it), but
+    # its definition stays, so the inner branch that requires "c" can still
+    # generate it. Note that {"a", "c"} is inherently non-exclusive in this
+    # schema (it also satisfies the outer {"required": ["c"]} branch), so
+    # the outcomes are checked structurally rather than with a validator.
+    outputs = _generate_many(NESTED, n=50, validate=False)
+    assert {frozenset(out) for out in outputs} <= {
+        frozenset({"a", "b"}),
+        frozenset({"a", "c"}),
+        frozenset({"b", "c"}),
+    }
+    # Force outer branch 0 then inner branch 1: both sites sit at the root
+    # path, so one selector serves both and decides by the candidates.
+    scenario = Scenario(
+        name="s",
+        oneof_selectors={
+            "": lambda ctx, schemas: 0 if "oneOf" in schemas[0] else 1
+        },
+    )
+    out = JSONSchemaGenerator(Schema(data=NESTED)).generate(scenario)
+    assert set(out) == {"a", "c"}
+
+
+def test_branch_refining_a_parent_property_keeps_its_type():
+    schema = {
+        "type": "object",
+        "properties": {"k": {"type": "string"}},
+        "required": ["k"],
+        "oneOf": [
+            {"properties": {"k": {"pattern": "^a[0-9]$"}}},
+            {"properties": {"k": {"pattern": "^b[0-9]$"}}},
+        ],
+    }
+    outputs = _generate_many(schema, n=50)
+    assert all(re.fullmatch("[ab][0-9]", out["k"]) for out in outputs)
+    assert {out["k"][0] for out in outputs} == {"a", "b"}
+
+    numeric = {
+        "type": "object",
+        "properties": {"n": {"type": "integer", "minimum": 100}},
+        "required": ["n"],
+        "oneOf": [{"properties": {"n": {"maximum": 200}}}],
+    }
+    for out in _generate_many(numeric, n=30):
+        assert 100 <= out["n"] <= 200
+
+
+def test_allof_keeps_both_definitions_of_a_property():
+    merged = allof_merge(
+        {
+            "allOf": [
+                {"properties": {"k": {"type": "string"}}},
+                {"properties": {"k": {"pattern": "^a[0-9]$"}}},
+            ]
+        }
+    )
+    assert merged["properties"]["k"] == {
+        "allOf": [{"type": "string"}, {"pattern": "^a[0-9]$"}]
+    }
+    schema = {
+        "type": "object",
+        "required": ["k"],
+        "allOf": [
+            {"properties": {"k": {"type": "string"}}},
+            {"properties": {"k": {"pattern": "^a[0-9]$"}}},
+        ],
+    }
+    for out in _generate_many(schema, n=30):
+        assert re.fullmatch("a[0-9]", out["k"])
+
+
+PET_SCHEMA = {
+    "definitions": {
+        "Dog": {
+            "type": "object",
+            "properties": {
+                "petType": {"const": "dog"},
+                "bark": {"type": "string"},
+            },
+            "required": ["petType", "bark"],
+        },
+        "Cat": {
+            "type": "object",
+            "properties": {
+                "petType": {"const": "cat"},
+                "meow": {"type": "string"},
+            },
+            "required": ["petType", "meow"],
+        },
+    },
+    "type": "object",
+    "properties": {
+        "petType": {"type": "string"},
+        "name": {"type": "string"},
+    },
+    "required": ["name", "petType"],
+    "discriminator": {
+        "propertyName": "petType",
+        "mapping": {"dog": "#/definitions/Dog", "cat": "#/definitions/Cat"},
+    },
+    "oneOf": [{"$ref": "#/definitions/Dog"}, {"$ref": "#/definitions/Cat"}],
+}
+
+
+def test_openapi_discriminator_shape_with_shared_properties():
+    outputs = _generate_many(PET_SCHEMA, n=30, base_uri="file://pets.json")
+    assert {out["petType"] for out in outputs} == {"dog", "cat"}
+    for out in outputs:
+        assert "name" in out
+        assert ("bark" in out) != ("meow" in out)

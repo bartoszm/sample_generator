@@ -38,6 +38,12 @@ The format is based on Keep a Changelog.
   value can be drawn, and only an unmet `minItems` raises `ValueError`.
 - Break scenarios resolve `items[0].name` to the item's schema instead of
   stopping at the array.
+- `oneOf`/`anyOf` branches are generated together with the keywords next
+  to them (`type`, `properties`, `required`, `format`, ...), so branches
+  that only add `required` or `format` work. For `oneOf`, properties that
+  only the other branches require are left out. `allOf` (and the
+  parent/branch merge) keeps both definitions of a property defined in
+  several parts, so a part can refine another's property.
 
 ## [0.5.0] - 2026-05-07
 

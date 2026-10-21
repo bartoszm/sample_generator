@@ -207,6 +207,10 @@ class Context(BaseModel):
     # properties and array items beyond minItems are left out, which is
     # what makes recursive schemas terminate.
     recursive: bool = False
+    # Properties that only the non-selected oneOf branches require. The
+    # object handler leaves them out unless the object itself requires
+    # them or the scenario names them. Applies to this node only.
+    excluded_properties: Tuple[str, ...] = ()
 
     def __getitem__(self, key: str) -> Any:
         return self.data[key]

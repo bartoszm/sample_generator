@@ -129,6 +129,26 @@ sample = gen.generate()
 
 This correctly resolves cross-component `$ref` pointers. See the full guide in [`docs/OPENAPI.md`](docs/OPENAPI.md) for advanced usage, the `jsonref` caching details, and when to use `from_raw_data` vs `from_oas`.
 
+## User guide: Scalar constraints
+
+When no scenario override applies, `DefaultValueGenerator` draws a value
+that honours the keywords below.
+
+- `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` — with a
+  single bound the default window (0..100 for integers, 0.0..1.0 for
+  numbers) is kept when the bound falls inside it; otherwise the window is
+  moved so that it starts (or ends) at the bound. `{"minimum": 576}` yields
+  576..676.
+- `multipleOf` — a random multiple inside the bounds. A `ValueError` is
+  raised when no multiple fits, e.g. `minimum: 1, maximum: 6, multipleOf: 7`.
+- `minLength`, `maxLength` — applied on their own and together with
+  `pattern` or `format`. Up to 50 candidates are drawn; if none fits (for
+  example `format: email` with `maxLength: 5`) a `UserWarning` is emitted
+  and the last candidate is returned, so generation never crashes on an
+  unsatisfiable combination.
+- `format` — `date-time` and `time` values carry a UTC offset
+  (`2025-09-28T21:09:04+00:00`, `19:47:52Z`), as RFC 3339 requires.
+
 ## User guide: Break Scenarios
 
 Break scenarios take a valid generated sample and intentionally corrupt it so that it fails JSON Schema validation — useful for negative-path tests, validator error-message testing, and schema-evolution checks.

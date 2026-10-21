@@ -129,6 +129,43 @@ sample = gen.generate()
 
 This correctly resolves cross-component `$ref` pointers. See the full guide in [`docs/OPENAPI.md`](docs/OPENAPI.md) for advanced usage, the `jsonref` caching details, and when to use `from_raw_data` vs `from_oas`.
 
+## User guide: Scalar constraints
+
+When no scenario override applies, `DefaultValueGenerator` draws a value
+that honours the keywords below. When a schema cannot be satisfied it
+raises `ValueError` naming the schema, rather than returning a value that
+would fail validation.
+
+- `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` — both the
+  numeric form and the draft-4 / OpenAPI 3.0 boolean form are understood;
+  when a plain and an exclusive bound are both given, the tighter one
+  wins. With a single bound the default span is kept: `{"minimum": 576}`
+  draws 576..676, `{"maximum": -5}` draws -105..-5 (integers), and numbers
+  use a span of 1.0. Exclusive bounds are exact (`floor(x) + 1`,
+  `ceil(x) - 1` for integers, the open interval for numbers). An empty or
+  inverted range raises.
+- `multipleOf` — a random multiple inside the bounds. A one-sided bound is
+  widened to reach the first multiple (`minimum: 99, multipleOf: 7` can
+  give 105). Float steps are checked the way validators do, so
+  `0 < x < 0.4, multipleOf: 0.1` raises when the only candidate, `0.3`,
+  fails `0.3 / 0.1` in floating point.
+- `minLength`, `maxLength` — applied on their own and together with
+  `pattern` or `format`. `email`, `hostname`, `uri`, `url`, `phone` and
+  `ipv4` are drawn from Faker first and then built to a fitting length
+  (`a@xmi.vw` for `maxLength: 12`, `1.2.3.4` for `maxLength: 7`).
+  Fixed-shape formats (`uuid`, `ipv6`, `date`, `time`, `date-time`) must
+  fit as they are, so `uuid` with `maxLength: 10` raises. A `pattern` is
+  drawn with its open-ended repeats capped at `maxLength` and floored at
+  `minLength`, so `^[a-z]{200,}$` and `^[a-z]+$` with `minLength: 150`
+  both work; nested open-ended repeats such as `(a+)+` draw each level
+  independently, so a tight `maxLength` may be missed and raise.
+  `minLength > maxLength` raises. Unknown formats are annotations and take
+  the plain string path.
+- Integer bounds stay exact above 2**53 (`format: int64` with
+  `maximum: 9223372036854775807` works).
+- `format` — `date-time` and `time` values carry a UTC offset
+  (`2025-09-28T21:09:04.826286+00:00`, `19:47:52Z`), as RFC 3339 requires.
+
 ## User guide: Break Scenarios
 
 Break scenarios take a valid generated sample and intentionally corrupt it so that it fails JSON Schema validation — useful for negative-path tests, validator error-message testing, and schema-evolution checks.

@@ -7,6 +7,8 @@ sys.path.insert(
 )
 
 
+import pytest
+
 from json_sample_generator.DefaultValueGenerator import DefaultValueGenerator
 
 
@@ -32,10 +34,11 @@ def test_integer_with_min_max():
 
 
 def test_integer_only_min():
+    # a single bound keeps the default span: [50, 150]
     g = DefaultValueGenerator()({"type": "integer", "minimum": 50})
     samples = sample_many(g)
     assert all(isinstance(x, int) for x in samples)
-    assert all(50 <= x <= 100 for x in samples)
+    assert all(50 <= x <= 150 for x in samples)
 
 
 def test_integer_only_max():
@@ -97,13 +100,12 @@ def test_integer_non_numeric_bounds_fallback():
     assert len(set(samples)) > 1
 
 
-def test_integer_min_greater_than_max_swapped():
-    # min > max should be swapped internally
-    g = DefaultValueGenerator()(
-        {"type": "integer", "minimum": 100, "maximum": 10}
-    )
-    samples = sample_many(g)
-    assert all(10 <= x <= 100 for x in samples)
+def test_integer_min_greater_than_max_raises():
+    # an inverted range is unsatisfiable: no value could be in range
+    with pytest.raises(ValueError, match="no integer lies within"):
+        DefaultValueGenerator()(
+            {"type": "integer", "minimum": 100, "maximum": 10}
+        )
 
 
 def test_integer_float_bounds_coercion():
@@ -124,9 +126,8 @@ def test_integer_exclusive_with_non_integer_bounds():
     }
     g = DefaultValueGenerator()(schema)
     samples = sample_many(g)
-    # exclusiveMinimum -> 1.2 + 1 -> 2.2 -> ceil -> 3
-    # exclusiveMaximum -> 4.8 - 1 -> 3.8 -> floor -> 3
-    assert all(x == 3 for x in samples)
+    # integers strictly between 1.2 and 4.8: floor(1.2)+1 .. ceil(4.8)-1
+    assert set(samples) == {2, 3, 4}
 
 
 def test_integer_min_equals_max():

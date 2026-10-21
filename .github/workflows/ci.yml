@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,14 +15,27 @@ jobs:
         with:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@v4
-      - name: Install deps
-        run: |
-          uv venv
-          uv sync --group dev
       - name: Lint
         run: |
           uvx ruff check .
           uvx black --check .
           uvx isort --check-only .
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.13', '3.14']
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v4
+      - name: Install deps
+        run: uv sync --group dev
       - name: Test
         run: uv run pytest -q

@@ -25,15 +25,17 @@ The format is based on Keep a Changelog.
 - Recursive schemas end through a cycle rule (a schema node that recurs on
   the current path is generated with only its required members, and a
   `oneOf`/`anyOf` on a cycle prefers a branch that does not re-enter the
-  path) and a re-entry limit (a node recurring a third time is cut, with a
-  `UserWarning` when the schema requires it) instead of a depth limit;
+  path) and a re-entry limit (the third occurrence of a node on a path is
+  cut, with a `UserWarning` when the schema requires it) instead of a
+  depth limit;
   plain deep nesting is generated in full. `max_depth` is a hard cap, now
   50 by default, that warns the same way. The scenario and break
   enumerators mirror the rule, the limit and the cap.
-- `uniqueItems` is honoured: items are compared as JSON values, closed
-  domains (`enum`, `const`, boolean, bounded integers) are sampled without
-  replacement with the array length capped at the number of distinct
-  values, and `minItems` above that number raises `ValueError`.
+- `uniqueItems` is honoured: items are compared as JSON values (`null`
+  included), closed domains (`enum`, `const`, boolean, bounded integers)
+  are sampled without replacement with the array length capped at the
+  number of distinct values, other domains end the array when no distinct
+  value can be drawn, and only an unmet `minItems` raises `ValueError`.
 - Break scenarios resolve `items[0].name` to the item's schema instead of
   stopping at the array.
 

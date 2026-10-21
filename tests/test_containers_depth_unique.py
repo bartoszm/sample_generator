@@ -358,6 +358,121 @@ def test_unique_items_keep_large_integers_distinct():
         assert sorted(out["xs"]) == [2**70, 2**70 + 1]
 
 
+def test_unique_items_null_is_a_value():
+    schema = _obj(
+        xs={
+            "type": "array",
+            "maxItems": 5,
+            "uniqueItems": True,
+            "items": {"enum": [None, "a"]},
+        }
+    )
+    for out in _generate_many(schema, n=50):
+        assert len(out["xs"]) <= 2
+        assert out["xs"].count(None) <= 1
+
+
+@pytest.mark.parametrize(
+    "items, extra, size",
+    [
+        (
+            {"type": "integer", "minimum": 0, "maximum": 2, "multipleOf": 1},
+            {"maxItems": 5},
+            3,
+        ),
+        (
+            {
+                "type": "object",
+                "required": ["a"],
+                "properties": {
+                    "a": {"type": "integer", "minimum": 0, "maximum": 3}
+                },
+            },
+            {"maxItems": 6},
+            4,
+        ),
+        (
+            {
+                "type": "object",
+                "required": ["a"],
+                "properties": {"a": {"enum": [1, 2]}},
+            },
+            {},
+            2,
+        ),
+    ],
+)
+def test_unique_items_end_the_array_when_the_domain_is_exhausted(
+    items, extra, size
+):
+    schema = _obj(
+        xs={"type": "array", "uniqueItems": True, "items": items, **extra}
+    )
+    outputs = _generate_many(schema, n=50)
+    assert all(len(out["xs"]) <= size for out in outputs)
+
+
+def test_unique_items_unmet_min_items_raises_for_unsized_domains():
+    schema = _obj(
+        xs={
+            "type": "array",
+            "minItems": 3,
+            "uniqueItems": True,
+            "items": {
+                "type": "object",
+                "required": ["a"],
+                "properties": {"a": {"enum": [1, 2]}},
+            },
+        }
+    )
+    with pytest.raises(ValueError, match="minItems=3 cannot be met"):
+        JSONSchemaGenerator(Schema(data=schema)).generate()
+
+
+RECURSIVE_ONEOF_ALLOF = {
+    "type": "object",
+    "required": ["root"],
+    "properties": {"root": {"$ref": "#/$defs/T"}},
+    "$defs": {
+        "T": {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "required": ["v"],
+                    "properties": {"v": {"type": "integer"}},
+                },
+                {
+                    "allOf": [
+                        {
+                            "type": "object",
+                            "required": ["a"],
+                            "properties": {"a": {"type": "string"}},
+                        },
+                        {
+                            "required": ["c"],
+                            "properties": {"c": {"$ref": "#/$defs/T"}},
+                        },
+                    ]
+                },
+            ]
+        }
+    },
+}
+
+
+def test_cycle_escape_sees_refs_inside_allof_members():
+    validator = Draft7Validator(RECURSIVE_ONEOF_ALLOF)
+    gen = JSONSchemaGenerator(
+        Schema(data=RECURSIVE_ONEOF_ALLOF, base_uri="file://rec.json")
+    )
+    for seed in range(50):
+        random.seed(seed)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            out = gen.generate()
+        assert not list(validator.iter_errors(out)), (seed, out)
+
+
 def test_unique_items_unsatisfiable_raises():
     schema = _obj(
         xs={

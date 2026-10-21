@@ -58,6 +58,12 @@ GeneratorFunctionType = Callable[[Dict[str, Any]], Callable[[], Any]]
 UNIQUE_ITEMS_ATTEMPTS = 64
 
 
+class _NoDistinctItem(Exception):
+    """Raised inside ``_ensure_unique_item`` when no value distinct from
+    the earlier items can be drawn; ``_handle_array`` decides whether that
+    violates ``minItems`` or just ends the array."""
+
+
 def _json_key(value: Any) -> Any:
     """A hashable key under which two values are equal as JSON values:
     ``1`` and ``true`` differ, ``1`` and ``1.0`` do not."""
@@ -331,8 +337,8 @@ class JSONSchemaGenerator:
         self._warn_cut(
             ctx,
             builder,
-            f"recursion limit reached (a schema node recurs more than "
-            f"{MAX_REENTRIES} times on the path)",
+            f"recursion limit reached (a schema node occurs for the "
+            f"{MAX_REENTRIES + 1}rd time on the path)",
         )
         return True
 
@@ -475,10 +481,13 @@ class JSONSchemaGenerator:
             f"{type(sel_res).__name__}; expected int, str, or dict"
         )
 
-    @staticmethod
-    def _reenters(candidate: Any, ref_path: Tuple[Any, ...]) -> bool:
-        """True if *candidate* is, or directly holds (in ``properties``,
-        ``items`` or ``allOf``), a schema node already on the path."""
+    @classmethod
+    def _reenters(
+        cls, candidate: Any, ref_path: Tuple[Any, ...], depth: int = 3
+    ) -> bool:
+        """True if *candidate* is, or holds within *depth* levels of
+        ``properties``, ``items`` or ``allOf``, a schema node already on
+        the path."""
         on_path = set(ref_path)
         if schema_marker(candidate) in on_path:
             return True
@@ -491,6 +500,8 @@ class JSONSchemaGenerator:
             return False
         if schema_marker(node) in on_path:
             return True
+        if depth <= 0:
+            return False
         children: List[Any] = []
         props = node.get("properties")
         if isinstance(props, dict):
@@ -498,7 +509,9 @@ class JSONSchemaGenerator:
         if "items" in node:
             children.append(node["items"])
         children.extend(node.get("allOf") or [])
-        return any(schema_marker(child) in on_path for child in children)
+        return any(
+            cls._reenters(child, ref_path, depth - 1) for child in children
+        )
 
     @staticmethod
     def _lookup_variant_selector(
@@ -720,9 +733,22 @@ class JSONSchemaGenerator:
             )
             value = self._generate_node(child_ctx, scenario, builder)
             if unique:
-                value = self._ensure_unique_item(
-                    ctx, child_ctx, i, value, domain, scenario, builder
-                )
+                try:
+                    value = self._ensure_unique_item(
+                        ctx, child_ctx, i, value, domain, scenario, builder
+                    )
+                except _NoDistinctItem as exc:
+                    if i < min_items:
+                        raise ValueError(
+                            f"uniqueItems at '{ctx.prop_path}': minItems="
+                            f"{min_items} cannot be met, {exc}"
+                        ) from None
+                    # The domain is exhausted (a shape the cap cannot
+                    # size): end the array here rather than fail.
+                    stored = builder.get_value_at_path(ctx.prop_path)
+                    if isinstance(stored, list) and len(stored) > i:
+                        del stored[i:]
+                    break
             result.append(value)
 
         return result
@@ -797,18 +823,17 @@ class JSONSchemaGenerator:
         A closed domain (``const``, ``enum``, boolean) is sampled without
         replacement; an open domain is redrawn up to
         :data:`UNIQUE_ITEMS_ATTEMPTS` times. An item an override chose is
-        left alone. Raises ``ValueError`` when no distinct value exists.
+        left alone. A slot that was never written (scenario_only, a cut)
+        is not compared; a written ``null`` is a value like any other.
+        Raises :class:`_NoDistinctItem` when no distinct value exists.
         """
         stored = builder.get_value_at_path(ctx.prop_path)
-        if not isinstance(stored, list):
+        if not isinstance(stored, list) or index >= len(stored):
             return value
 
-        def current() -> Any:
-            return stored[index] if index < len(stored) else value
-
         earlier = {_json_key(v) for v in stored[:index]}
-        item = current()
-        if item is None or _json_key(item) not in earlier:
+        item = stored[index]
+        if _json_key(item) not in earlier:
             return item
         if self._scenario_defined(child_ctx.prop_path, scenario):
             return item
@@ -816,10 +841,9 @@ class JSONSchemaGenerator:
         if domain is not None:
             unused = [v for v in domain if _json_key(v) not in earlier]
             if not unused:
-                raise ValueError(
-                    f"uniqueItems at '{ctx.prop_path}': the item schema "
-                    f"allows only {len(domain)} distinct value(s), so no "
-                    f"value is left for index {index}"
+                raise _NoDistinctItem(
+                    f"the item schema allows only {len(domain)} distinct "
+                    f"value(s) and index {index} needs another one"
                 )
             chosen = copy.deepcopy(random.choice(unused))
             builder.set_value_at_path(child_ctx.prop_path, chosen)
@@ -830,13 +854,14 @@ class JSONSchemaGenerator:
             # than merged with the previous draw.
             builder.set_value_at_path(child_ctx.prop_path, None)
             value = self._generate_node(child_ctx, scenario, builder)
-            item = current()
-            if item is None or _json_key(item) not in earlier:
+            if index >= len(stored):
+                return value
+            item = stored[index]
+            if _json_key(item) not in earlier:
                 return item
-        raise ValueError(
-            f"uniqueItems at '{ctx.prop_path}': no value distinct from the "
-            f"earlier items could be drawn for index {index} in "
-            f"{UNIQUE_ITEMS_ATTEMPTS} attempts"
+        raise _NoDistinctItem(
+            f"no value distinct from the earlier items could be drawn for "
+            f"index {index} in {UNIQUE_ITEMS_ATTEMPTS} attempts"
         )
 
     def _handle_object(

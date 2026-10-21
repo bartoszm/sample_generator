@@ -16,6 +16,7 @@ from .helpers import allof_merge, to_type
 from .helpers.utils import (
     DEFAULT_MAX_DEPTH,
     MAX_REENTRIES,
+    allof_ref_markers,
     join_path,
     parse_path,
     path_startswith,
@@ -95,6 +96,33 @@ def _json_key(value: Any) -> Any:
             tuple(sorted((str(k), _json_key(v)) for k, v in value.items())),
         )
     return ("other", repr(value))
+
+
+# Keywords next to a oneOf/anyOf that do not constrain the instance and
+# therefore need not be merged into the chosen branch. Vendor extensions
+# (``x-...``) are treated the same way.
+_VARIANT_ANNOTATIONS = frozenset(
+    {
+        "discriminator",
+        "title",
+        "description",
+        "$comment",
+        "examples",
+        "example",
+        "default",
+        "deprecated",
+        "readOnly",
+        "writeOnly",
+        "$schema",
+        "$id",
+        "definitions",
+        "$defs",
+        "components",
+        "xml",
+        "externalDocs",
+        "nullable",
+    }
+)
 
 
 class JSONSchemaGenerator:
@@ -261,7 +289,11 @@ class JSONSchemaGenerator:
         return schema
 
     def _generate_node(
-        self, ctx: Context, scenario: Scenario, builder: SchemaGeneratorBuilder
+        self,
+        ctx: Context,
+        scenario: Scenario,
+        builder: SchemaGeneratorBuilder,
+        via_ref: bool = False,
     ) -> Any:
         """
         Generate a node in the JSON sample based on the schema and context.
@@ -270,6 +302,8 @@ class JSONSchemaGenerator:
             ctx: The current generation context
             scenario: The scenario to use for this generation
             builder: The builder instance for this generation
+            via_ref: True when the node is the body of a ``$ref`` that was
+                just resolved (its own marker is already on the path)
 
         Returns:
             The generated value for this node
@@ -292,7 +326,7 @@ class JSONSchemaGenerator:
                 ref_path=ctx.ref_path + (ref,),
                 recursive=ctx.recursive or ref in ctx.ref_path,
             )
-            return self._generate_node(ctx, scenario, builder)
+            return self._generate_node(ctx, scenario, builder, via_ref=True)
 
         path = ctx.prop_path
 
@@ -307,7 +341,7 @@ class JSONSchemaGenerator:
                 return None
 
         if "allOf" in schema:
-            return self._generate_all_of(ctx, scenario, builder)
+            return self._generate_all_of(ctx, scenario, builder, via_ref)
         if "anyOf" in schema:
             return self._generate_any_of(ctx, scenario, builder)
         if "oneOf" in schema:
@@ -386,7 +420,11 @@ class JSONSchemaGenerator:
         )
 
     def _generate_all_of(
-        self, ctx: Context, scenario: Scenario, builder: SchemaGeneratorBuilder
+        self,
+        ctx: Context,
+        scenario: Scenario,
+        builder: SchemaGeneratorBuilder,
+        via_ref: bool = False,
     ):
         """
         Generate a node that satisfies all schemas in an allOf array.
@@ -399,32 +437,148 @@ class JSONSchemaGenerator:
         Returns:
             The generated value
         """
-        result = self.allof_merger(ctx.schema_data)
         # Use the original allOf schema (with potential JsonRef children) as the parent schema
         origin_parent = ctx.schema_data
+        # The merged schema is a fresh dict. For an inline allOf (a property
+        # value such as {"allOf": [$ref Node, ...]}, user-written or built
+        # by allof_merge for a property defined twice) the $ref parts are
+        # the edges recursion travels, so their markers are carried so the
+        # recursion rule and the re-entry limit see through the merge. The
+        # body of a type reached through a $ref already has its own marker
+        # on the path; its parts are mixins (a shared Base) and must not
+        # count, or OpenAPI inheritance would look like a cycle.
+        markers = [] if via_ref else allof_ref_markers(origin_parent)
+        for marker in markers:
+            if self._reentry_cut(ctx, marker, builder):
+                return None
+        recursive = ctx.recursive or any(m in ctx.ref_path for m in markers)
+        result = self.allof_merger(origin_parent)
         return self._generate_node(
-            ctx.copy(schema_data=result, parent_schema=origin_parent),
+            ctx.copy(
+                schema_data=result,
+                parent_schema=origin_parent,
+                ref_path=ctx.ref_path + tuple(markers),
+                recursive=recursive,
+            ),
             scenario,
             builder,
         )
 
+    @staticmethod
+    def _property_schema_path(value: Any, inherited: Optional[str]) -> Any:
+        """The ``schema_path`` for a property or item schema: its ``$ref``
+        when it is a reference, the last ``$ref`` part when it is an
+        ``allOf`` of references (a re-declared or refined reference), else
+        the inherited path."""
+        if isinstance(value, JsonRef):
+            return value.__reference__["$ref"]
+        if isinstance(value, dict) and isinstance(value.get("allOf"), list):
+            refs = [
+                part.__reference__["$ref"]
+                for part in value["allOf"]
+                if isinstance(part, JsonRef)
+            ]
+            if refs:
+                return refs[-1]
+        return inherited
+
     def _generate_any_of(
         self, ctx: Context, scenario: Scenario, builder: SchemaGeneratorBuilder
     ):
-        schemas = ctx.schema_data.get("anyOf", [])
-        selected = self._resolve_variant(ctx, schemas, scenario, "anyOf")
-        return self._generate_node(
-            ctx.copy(schema_data=selected), scenario, builder
-        )
+        return self._generate_variant(ctx, scenario, builder, "anyOf")
 
     def _generate_one_of(
         self, ctx: Context, scenario: Scenario, builder: SchemaGeneratorBuilder
     ):
-        schemas = ctx.schema_data.get("oneOf", [])
-        selected = self._resolve_variant(ctx, schemas, scenario, "oneOf")
-        return self._generate_node(
-            ctx.copy(schema_data=selected), scenario, builder
-        )
+        return self._generate_variant(ctx, scenario, builder, "oneOf")
+
+    def _generate_variant(
+        self,
+        ctx: Context,
+        scenario: Scenario,
+        builder: SchemaGeneratorBuilder,
+        kind: str,
+    ) -> Any:
+        """Generate a node from the branch chosen for a oneOf/anyOf.
+
+        JSON Schema evaluates the keywords next to ``oneOf``/``anyOf``
+        together with the chosen branch, so when the parent carries
+        constraints of its own (``type``, ``properties``, ``required``,
+        ``format``...) the two are merged the way ``allOf`` is before
+        generating. A parent that holds nothing but the branch list and
+        annotations (``discriminator``, ``title``...) recurses into the
+        branch directly, which keeps ``$ref`` identity for
+        ``schema_path`` tracking.
+
+        For ``oneOf`` the instance must match exactly one branch, so the
+        properties that only the other branches require are recorded on
+        the context (``excluded_properties``) and left out by the object
+        handler unless the merged schema requires them or the scenario
+        names them. Their definitions stay in place, so a nested
+        ``oneOf`` that requires one of them can still generate it.
+        """
+        parent = ctx.schema_data
+        schemas = parent.get(kind, [])
+        selected = self._resolve_variant(ctx, schemas, scenario, kind)
+
+        siblings = {
+            k: v
+            for k, v in parent.items()
+            if k != kind
+            and k not in _VARIANT_ANNOTATIONS
+            and not k.startswith("x-")
+        }
+        if not siblings:
+            # Recurse into the branch itself (keeps $ref identity and
+            # schema_path), still leaving out what only the other oneOf
+            # branches require.
+            excluded = ctx.excluded_properties
+            if kind == "oneOf":
+                flat = self.allof_merger({"allOf": [selected]})
+                excluded = excluded + self._required_only_elsewhere(
+                    schemas, selected, flat if isinstance(flat, dict) else {}
+                )
+            return self._generate_node(
+                ctx.copy(schema_data=selected, excluded_properties=excluded),
+                scenario,
+                builder,
+            )
+
+        merged = self.allof_merger({"allOf": [siblings, selected]})
+        excluded = ctx.excluded_properties
+        if kind == "oneOf":
+            excluded = excluded + self._required_only_elsewhere(
+                schemas, selected, merged
+            )
+
+        updates: Dict[str, Any] = {
+            "schema_data": merged,
+            "parent_schema": parent,
+            "excluded_properties": excluded,
+        }
+        if isinstance(selected, JsonRef):
+            updates["schema_path"] = selected.__reference__["$ref"]
+        return self._generate_node(ctx.copy(**updates), scenario, builder)
+
+    def _required_only_elsewhere(
+        self, schemas: List[Any], selected: Any, merged: Dict[str, Any]
+    ) -> Tuple[str, ...]:
+        """Names the non-selected ``oneOf`` branches require that the
+        merged schema does not. Each branch is flattened through the
+        allOf merger, so ``required`` nested in ``allOf`` and behind
+        ``$ref`` counts too."""
+        required = set(merged.get("required") or [])
+        names: List[str] = []
+        for branch in schemas:
+            if branch is selected:
+                continue
+            flat = self.allof_merger({"allOf": [branch]})
+            if not isinstance(flat, dict):
+                continue
+            for name in flat.get("required") or []:
+                if name not in required and name not in names:
+                    names.append(name)
+        return tuple(names)
 
     def _resolve_variant(
         self,
@@ -718,10 +872,9 @@ class JSONSchemaGenerator:
         else:
             count = random.randint(min_items, max_items)
 
-        # Derive schema_path for array items when items is a $ref
-        item_schema_path: Optional[str] = None
-        if isinstance(items, JsonRef):
-            item_schema_path = items.__reference__["$ref"]
+        # Derive schema_path for array items when items is a $ref (or an
+        # allOf of refs)
+        item_schema_path = self._property_schema_path(items, None)
 
         # The root container is never an uncovered optional field, so it
         # is written even in scenario_only mode.
@@ -739,6 +892,7 @@ class JSONSchemaGenerator:
                 data=builder.generated,
                 ref_path=child_markers,
                 recursive=recursive,
+                excluded_properties=(),
             )
             value = self._generate_node(child_ctx, scenario, builder)
             if unique:
@@ -907,6 +1061,9 @@ class JSONSchemaGenerator:
         )
         child_markers = ctx.ref_path + (schema_marker(ctx.schema_data),)
         required_set = set(ctx.schema_data.get("required") or [])
+        # Properties that only the other oneOf branches require are left
+        # out unless this object requires them or the scenario names them.
+        excluded = set(ctx.excluded_properties)
         result: Dict[str, Any] = {}
 
         for k, v in props.items():
@@ -916,19 +1073,16 @@ class JSONSchemaGenerator:
                     child_path, scenario, builder
                 ):
                     continue
-            elif (
-                scenario.minimal_mode or recursive
-            ) and k not in required_set:
+            elif k not in required_set and (
+                scenario.minimal_mode or recursive or k in excluded
+            ):
                 if not self._should_include_optional(
                     child_path, scenario, builder
                 ):
                     continue
-            # Inherit schema_path by default; override if this property is a $ref
-            child_schema_path = (
-                v.__reference__["$ref"]
-                if isinstance(v, JsonRef)
-                else ctx.schema_path
-            )
+            # Inherit schema_path by default; override if this property is
+            # a $ref (or an allOf of refs)
+            child_schema_path = self._property_schema_path(v, ctx.schema_path)
 
             child_ctx = ctx.copy(
                 prop_path=child_path,
@@ -938,6 +1092,7 @@ class JSONSchemaGenerator:
                 data=builder.generated,
                 ref_path=child_markers,
                 recursive=recursive,
+                excluded_properties=(),
             )
             result[k] = self._generate_node(child_ctx, scenario, builder)
 

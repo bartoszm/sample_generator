@@ -141,6 +141,49 @@ Scenario(
 - `bool` returns from a selector raise `TypeError` (Python's `isinstance(True, int)` gotcha).
 - If no selector matches a path, a random candidate is chosen (default behaviour).
 
+### How the chosen branch is generated
+
+JSON Schema evaluates the keywords next to `oneOf`/`anyOf` together with
+the chosen branch, and so does the generator: when the parent carries
+constraints of its own (`type`, `properties`, `required`, `format`, ...)
+they are merged with the branch the way `allOf` is before generating.
+These common idioms therefore work:
+
+```python
+# an exclusive choice of properties
+{
+    "type": "object",
+    "properties": {"name": {"type": "string"}, "code": {"type": "integer"}},
+    "oneOf": [{"required": ["name"]}, {"required": ["code"]}],
+}
+
+# a choice of format
+{"type": "string", "oneOf": [{"format": "ipv4"}, {"format": "ipv6"}]}
+```
+
+When the parent and the branch both define a property, the two
+definitions are combined (`allOf`), so a branch may refine a parent
+property with a `pattern`, a `maximum`, a `const`, and so on. A property
+re-declared with the same `$ref` keeps that single reference, and a
+property defined as an `allOf` of references takes its `schema_path` from
+the last reference.
+
+For `oneOf` the instance must match exactly one branch. The generator
+guarantees that for branches that differ in `required` (including
+`required` nested in their `allOf` or behind `$ref`): a property that only
+the *other* branches require is left out of the generated object, unless
+the merged schema requires it or an override, `default_data` or a selector
+names it. Branches that differ in other ways are **not** checked for
+exclusivity, since the generator does not validate: with `{"type":
+"number"}` next to `{"type": "integer"}`, overlapping numeric ranges, or
+`{"type": "object"}` next to `{"required": ["x"]}`, the sample may satisfy
+more than one branch.
+
+A parent that holds nothing but the branch list and annotations
+(`discriminator`, `title`, `description`, ...) is generated from the
+branch alone, so `$ref` branches keep their `schema_path`; the properties
+that only the other `oneOf` branches require are left out there too.
+
 
 ## Reusing and composing scenarios
 There are two convenient approaches:

@@ -108,6 +108,8 @@ Key `Scenario` flags:
 - `minimal_mode=True` — emit only `required` fields plus any explicitly referenced by the scenario.
 - `scenario_only=True` — stricter: emit **only** fields covered by the scenario (overrides, pattern_overrides, default_data, oneof_selectors), regardless of `required`. Produces focused fixtures that may be schema-invalid by design.
 
+A `oneOf`/`anyOf` branch is generated together with the keywords next to it (`type`, `properties`, `required`, `format`, ...), so branches that only add `required` or `format` work; see "How the chosen branch is generated" in the guide.
+
 See the full guide (including `default_data`) in [`docs/SCENARIOS.md`](docs/SCENARIOS.md).
 
 ## User guide: Loading from OpenAPI (OAS)

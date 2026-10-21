@@ -2,7 +2,7 @@ import copy
 import json
 import re
 import uuid
-from typing import Any, Callable, Dict, List, Mapping, Union
+from typing import Any, Callable, Dict, List, Mapping, Set, Union
 
 from jsonref import JsonRef
 
@@ -47,6 +47,35 @@ _TOKEN = re.compile(
     re.VERBOSE,
 )
 _NEEDS_QUOTING = re.compile(r'[.\[\]"\\]')
+
+
+def allof_ref_markers(node: Any) -> List[Any]:
+    """The ``$ref`` markers of the :class:`JsonRef` parts of *node*'s
+    ``allOf``, nested ``allOf`` included, in order. A merged ``allOf`` is
+    a fresh dict, so these markers are what lets the recursion rule see
+    through it."""
+    markers: List[Any] = []
+    seen: Set[int] = set()
+
+    def visit(part: Any) -> None:
+        if isinstance(part, JsonRef):
+            markers.append(schema_marker(part))
+            try:
+                subject = part.__subject__
+            except Exception:
+                return
+        else:
+            subject = part
+        if not isinstance(subject, dict) or id(subject) in seen:
+            return
+        seen.add(id(subject))
+        for inner in subject.get("allOf") or []:
+            visit(inner)
+
+    if isinstance(node, dict):
+        for part in node.get("allOf") or []:
+            visit(part)
+    return markers
 
 
 def parse_path(path: str) -> List[PathSegment]:

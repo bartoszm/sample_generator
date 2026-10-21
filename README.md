@@ -132,22 +132,35 @@ This correctly resolves cross-component `$ref` pointers. See the full guide in [
 ## User guide: Scalar constraints
 
 When no scenario override applies, `DefaultValueGenerator` draws a value
-that honours the keywords below.
+that honours the keywords below. When a schema cannot be satisfied it
+raises `ValueError` naming the schema, rather than returning a value that
+would fail validation.
 
-- `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` — with a
-  single bound the default window (0..100 for integers, 0.0..1.0 for
-  numbers) is kept when the bound falls inside it; otherwise the window is
-  moved so that it starts (or ends) at the bound. `{"minimum": 576}` yields
-  576..676.
-- `multipleOf` — a random multiple inside the bounds. A `ValueError` is
-  raised when no multiple fits, e.g. `minimum: 1, maximum: 6, multipleOf: 7`.
+- `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` — both the
+  numeric form and the draft-4 / OpenAPI 3.0 boolean form are understood;
+  when a plain and an exclusive bound are both given, the tighter one
+  wins. With a single bound the default span is kept: `{"minimum": 576}`
+  draws 576..676, `{"maximum": -5}` draws -105..-5 (integers), and numbers
+  use a span of 1.0. Exclusive bounds are exact (`floor(x) + 1`,
+  `ceil(x) - 1` for integers, the open interval for numbers). An empty or
+  inverted range raises.
+- `multipleOf` — a random multiple inside the bounds. A one-sided bound is
+  widened to reach the first multiple (`minimum: 99, multipleOf: 7` can
+  give 105). Float steps are checked the way validators do, so
+  `0 < x < 0.4, multipleOf: 0.1` raises when the only candidate, `0.3`,
+  fails `0.3 / 0.1` in floating point.
 - `minLength`, `maxLength` — applied on their own and together with
-  `pattern` or `format`. Up to 50 candidates are drawn; if none fits (for
-  example `format: email` with `maxLength: 5`) a `UserWarning` is emitted
-  and the last candidate is returned, so generation never crashes on an
-  unsatisfiable combination.
+  `pattern` or `format`. `email`, `hostname`, `uri`, `url` and `phone` are
+  drawn from Faker first and then built to a fitting length (`a@xmi.vw`
+  for `maxLength: 12`). Fixed-shape formats (`uuid`, `ipv4`, `ipv6`,
+  `date`, `time`, `date-time`) must fit as they are, so `uuid` with
+  `maxLength: 10` raises. A `pattern` is drawn with its open-ended repeats
+  capped at `maxLength` and, as a second try, floored at `minLength`, so
+  `^[a-z]{200,}$` and `^[a-z]+$` with `minLength: 150` both work.
+  `minLength > maxLength` raises. Unknown formats are annotations and take
+  the plain string path.
 - `format` — `date-time` and `time` values carry a UTC offset
-  (`2025-09-28T21:09:04+00:00`, `19:47:52Z`), as RFC 3339 requires.
+  (`2025-09-28T21:09:04.826286+00:00`, `19:47:52Z`), as RFC 3339 requires.
 
 ## User guide: Break Scenarios
 

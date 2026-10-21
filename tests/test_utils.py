@@ -7,17 +7,14 @@ from src.json_sample_generator.helpers.utils import (
 
 
 def test_parse_path_simple() -> None:
-    assert parse_path("a.b.c") == [
-        ("a", None),
-        ("b", None),
-        ("c", None),
-    ], "should parse dotted keys"
+    assert parse_path("a.b.c") == ["a", "b", "c"], "should parse dotted keys"
 
 
 def test_parse_path_with_index() -> None:
     assert parse_path("items[0].name") == [
-        ("items", 0),
-        ("name", None),
+        "items",
+        0,
+        "name",
     ], "should parse keys with indices"
 
 

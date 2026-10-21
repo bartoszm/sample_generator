@@ -188,10 +188,9 @@ class SampleBreaker:
         if not path:
             return node if isinstance(node, dict) else {}
 
-        parts = parse_path(path)
         current_data: Any = data
 
-        for key, idx in parts:
+        for segment in parse_path(path):
             node = _unwrap_node(node)
             if not isinstance(node, dict):
                 return {}
@@ -211,17 +210,21 @@ class SampleBreaker:
                     break
 
             # Traverse into properties or items.
-            if isinstance(current_data, dict) and key in current_data:
+            if (
+                isinstance(segment, str)
+                and isinstance(current_data, dict)
+                and segment in current_data
+            ):
                 props = node.get("properties", {})
-                node = _unwrap_node(props.get(key, {}))
-                current_data = current_data[key]
+                node = _unwrap_node(props.get(segment, {}))
+                current_data = current_data[segment]
             elif (
-                isinstance(current_data, list)
-                and idx is not None
-                and 0 <= idx < len(current_data)
+                isinstance(segment, int)
+                and isinstance(current_data, list)
+                and 0 <= segment < len(current_data)
             ):
                 node = _unwrap_node(node.get("items", {}))
-                current_data = current_data[idx]
+                current_data = current_data[segment]
             else:
                 # Path not found in data — return schema node as-is.
                 break
@@ -322,14 +325,12 @@ def _path_exists(data: Any, path: str) -> bool:
     """Return True when *path* navigates to an existing key in *data*."""
     if not path:
         return True
-    parts = parse_path(path)
     ref = data
-    for key, idx in parts:
-        if not isinstance(ref, dict) or key not in ref:
-            return False
-        ref = ref[key]
-        if idx is not None:
-            if not isinstance(ref, list) or idx >= len(ref):
+    for segment in parse_path(path):
+        if isinstance(segment, int):
+            if not isinstance(ref, list) or segment >= len(ref):
                 return False
-            ref = ref[idx]
+        elif not isinstance(ref, dict) or segment not in ref:
+            return False
+        ref = ref[segment]
     return True

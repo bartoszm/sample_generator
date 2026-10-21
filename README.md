@@ -189,6 +189,30 @@ Consequences:
 - Speeding up property-based tests where the array size is incidental.
 - Producing compact sample payloads for documentation or examples.
 
+## User guide: Property paths
+
+Scenario override keys, `oneof_selectors` keys and `ctx.prop_path` share one path syntax:
+
+| Path | Meaning |
+|---|---|
+| `address.city` | property `city` of property `address` |
+| `phones[0].number` | property `number` of the first element of `phones` |
+| `points[0][1]` | second element of the first element of `points` (arrays of arrays) |
+| `[0]` | first element, when the root schema is an array |
+| `["a.b"].c` | property `c` of a property named `a.b` |
+
+A property name that contains `.`, `[`, `]`, `"` or `\` is written as a JSON string in brackets; any other name is written bare. `json_sample_generator.helpers.utils.join_path` renders a path the way the generator does and `parse_path` splits it back into keys and indices.
+
+Objects and arrays are written to the result as soon as the generator enters them, so a required `{"type": "object"}` without properties yields `{}` and an array that draws zero items yields `[]`. In `scenario_only` mode a container still appears only when the scenario covers something inside it.
+
+## User guide: Recursion, nesting depth and `uniqueItems`
+
+Recursive schemas (`"$ref": "#"`, or components that reference each other) terminate through a cycle rule rather than a depth limit: when a schema node recurs on the current path, it is generated with only its required properties and its `minItems` array items, so the recursion stops wherever the schema makes it optional. While on a cycle, a `oneOf`/`anyOf` without a selector prefers a branch that does not re-enter a node already on the path, so a `Node | Leaf` choice escapes to the leaf. Plain deep nesting is generated in full.
+
+A node may occur on a path twice; its third occurrence is cut, so a recursion that the schema requires all the way down, such as `{"properties": {"child": {"$ref": "#"}}, "required": ["child"]}` or a node with two required children of its own type, ends after a few levels instead of branching without bound. Such a schema has no finite valid sample: a `UserWarning` names the cut path, once per `generate()` call. `JSONSchemaGenerator(max_depth=50)` remains as a hard safety cap on property levels (array indices do not count) and warns the same way. The scenario and break enumerators apply the same rule, cap and limit, so they enumerate exactly the sites the generator can produce.
+
+`uniqueItems` is honoured by comparing items as JSON values (`1` and `true` differ, `null` is a value). An item schema with a closed domain (`enum`, `const`, boolean, or an integer with both bounds) is sampled without replacement and the array length is capped at the number of distinct values; any other domain is redrawn, and when no distinct value can be drawn the array simply ends there. Only when `minItems` cannot be met, for example an `enum` of two values with `minItems: 3`, does generation raise `ValueError`.
+
 ## Contributing
 
 See `CONTRIBUTING.md`.

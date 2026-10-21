@@ -22,10 +22,16 @@ from typing import Any, Dict, List, Optional, Tuple
 from jsonref import JsonRef
 
 from .helpers.allof_handler import allof_merge
+from .helpers.utils import (
+    DEFAULT_MAX_DEPTH,
+    MAX_REENTRIES,
+    join_path,
+    schema_marker,
+)
 from .models.break_models import BreakKind, BreakRule, BreakScenario
 from .models.models import Schema
 
-_DEFAULT_MAX_DEPTH = 6
+_DEFAULT_MAX_DEPTH = DEFAULT_MAX_DEPTH
 _DEFAULT_MAX_SCENARIOS = 10_000
 
 _KNOWN_FORMATS = {
@@ -274,12 +280,23 @@ def _walk(
     seen: Dict[str, bool],
     required_in_parent: bool,
     parent_additional_props_false: bool,
+    ref_path: Tuple[Any, ...] = (),
+    recursive: bool = False,
 ) -> None:
     if depth > max_depth:
         return
+    # The generator's recursion rule: a node that recurs on the path gets
+    # its required members only; a node that recurs again is cut.
+    markers = [schema_marker(node)] if isinstance(node, JsonRef) else []
     node = _unwrap(node)
     if not isinstance(node, dict):
         return
+    markers.append(schema_marker(node))
+    recurrences = max(ref_path.count(m) for m in markers)
+    if recurrences >= MAX_REENTRIES:
+        return
+    recursive = recursive or recurrences >= 1
+    ref_path = ref_path + tuple(markers)
 
     # Flatten allOf before walking.
     if "allOf" in node and "oneOf" not in node and "anyOf" not in node:
@@ -296,6 +313,8 @@ def _walk(
             seen,
             required_in_parent,
             parent_additional_props_false,
+            ref_path,
+            recursive,
         )
         return
 
@@ -340,6 +359,8 @@ def _walk(
                 seen,
                 required_in_parent,
                 parent_additional_props_false,
+                ref_path,
+                recursive,
             )
 
     # Recurse into properties.
@@ -352,7 +373,9 @@ def _walk(
 
     if isinstance(props, dict):
         for prop_name, prop_schema in props.items():
-            child_path = f"{path}.{prop_name}" if path else str(prop_name)
+            if recursive and prop_name not in required:
+                continue
+            child_path = join_path(path, str(prop_name))
             _walk(
                 prop_schema,
                 child_path,
@@ -362,6 +385,8 @@ def _walk(
                 seen,
                 required_in_parent=(prop_name in required),
                 parent_additional_props_false=add_props_false,
+                ref_path=ref_path,
+                recursive=recursive,
             )
 
     # Emit an ADDITIONAL_PROPERTY site for the parent object itself.
@@ -379,7 +404,9 @@ def _walk(
 
     # Recurse into array items.
     items = node.get("items")
-    if isinstance(items, (dict, JsonRef)):
+    if isinstance(items, (dict, JsonRef)) and not (
+        recursive and (node.get("minItems") or 0) < 1
+    ):
         child_path = f"{path}[*]" if path else "[*]"
         _walk(
             items,
@@ -390,4 +417,6 @@ def _walk(
             seen,
             required_in_parent=False,
             parent_additional_props_false=False,
+            ref_path=ref_path,
+            recursive=recursive,
         )

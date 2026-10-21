@@ -4,6 +4,41 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog.
 
+## [Unreleased]
+
+### Changed
+
+- **Breaking:** `helpers.utils.parse_path` returns a flat list of keys and
+  indices (`["items", 0, "name"]`) instead of `(key, index)` pairs.
+- Property paths support arrays of arrays (`points[0][1]`), root arrays
+  (`[0]`) and property names containing `.` or `[`, written as a quoted
+  segment (`["a.b"].c`), both in the output and in scenario override keys;
+  `helpers.utils.join_path` renders a path the way the generator does.
+- Objects and arrays are written to the result as soon as the generator
+  enters them, so required empty objects, arrays that draw zero items and
+  minimal-mode objects with only optional properties are present, and a
+  root array schema produces a list. `scenario_only` mode is unchanged.
+- `Context.data` is a live view of the result being built, not a snapshot:
+  override callables can observe partly generated data, and reading a
+  value that does not exist yet (`KeyError` or `IndexError`) defers the
+  override to the second pass.
+- Recursive schemas end through a cycle rule (a schema node that recurs on
+  the current path is generated with only its required members, and a
+  `oneOf`/`anyOf` on a cycle prefers a branch that does not re-enter the
+  path) and a re-entry limit (the third occurrence of a node on a path is
+  cut, with a `UserWarning` when the schema requires it) instead of a
+  depth limit;
+  plain deep nesting is generated in full. `max_depth` is a hard cap, now
+  50 by default, that warns the same way. The scenario and break
+  enumerators mirror the rule, the limit and the cap.
+- `uniqueItems` is honoured: items are compared as JSON values (`null`
+  included), closed domains (`enum`, `const`, boolean, bounded integers)
+  are sampled without replacement with the array length capped at the
+  number of distinct values, other domains end the array when no distinct
+  value can be drawn, and only an unmet `minItems` raises `ValueError`.
+- Break scenarios resolve `items[0].name` to the item's schema instead of
+  stopping at the array.
+
 ## [0.5.0] - 2026-05-07
 
 ### Added

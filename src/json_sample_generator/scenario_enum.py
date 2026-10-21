@@ -25,9 +25,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from jsonref import JsonRef
 
 from .helpers.allof_handler import allof_merge
+from .helpers.utils import DEFAULT_MAX_DEPTH, join_path, schema_marker
 from .models import Scenario, Schema
 
-_DEFAULT_MAX_DEPTH = 6
+_DEFAULT_MAX_DEPTH = DEFAULT_MAX_DEPTH
 _DEFAULT_MAX_SCENARIOS = 10_000
 
 
@@ -181,9 +182,15 @@ def _walk(
     max_depth: int,
     out: List[VariantSite],
     seen: Dict[Tuple[str, str], int],
+    ref_path: Tuple[Any, ...] = (),
 ) -> None:
     if depth > max_depth:
         return
+    marker = schema_marker(node)
+    if marker in ref_path:
+        # Recursion: the sites below were recorded at the first occurrence.
+        return
+    ref_path = ref_path + (marker,)
     node = _unwrap(node)
     if not isinstance(node, dict):
         return
@@ -193,7 +200,7 @@ def _walk(
             merged = allof_merge(node)
         except Exception:
             merged = node
-        _walk(merged, path, depth + 1, max_depth, out, seen)
+        _walk(merged, path, depth + 1, max_depth, out, seen, ref_path)
         return
 
     for kind in ("oneOf", "anyOf"):
@@ -217,17 +224,25 @@ def _walk(
                 )
             )
         for v in variants:
-            _walk(v, path, depth + 1, max_depth, out, seen)
+            _walk(v, path, depth + 1, max_depth, out, seen, ref_path)
 
     props = node.get("properties")
     if isinstance(props, dict):
         for prop_name, prop_schema in props.items():
-            child_path = f"{path}.{prop_name}" if path else str(prop_name)
-            _walk(prop_schema, child_path, depth + 1, max_depth, out, seen)
+            child_path = join_path(path, str(prop_name))
+            _walk(
+                prop_schema,
+                child_path,
+                depth + 1,
+                max_depth,
+                out,
+                seen,
+                ref_path,
+            )
 
     items = node.get("items")
     if isinstance(items, (dict, JsonRef)):
-        _walk(items, f"{path}[*]", depth + 1, max_depth, out, seen)
+        _walk(items, f"{path}[*]", depth + 1, max_depth, out, seen, ref_path)
 
 
 def _site_to_regex_key(path: str) -> str:

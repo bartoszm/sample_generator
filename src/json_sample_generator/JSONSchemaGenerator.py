@@ -12,7 +12,13 @@ from proxytypes import LazyProxy
 
 from .DefaultValueGenerator import DefaultValueGenerator
 from .helpers import allof_merge, to_type
-from .helpers.utils import join_path, parse_path, path_startswith
+from .helpers.utils import (
+    DEFAULT_MAX_DEPTH,
+    join_path,
+    parse_path,
+    path_startswith,
+    schema_marker,
+)
 from .models import Context, Scenario, Schema
 from .SchemaGeneratorBuilder import SchemaGeneratorBuilder
 
@@ -46,8 +52,29 @@ fake = Faker()
 GeneratorFunctionType = Callable[[Dict[str, Any]], Callable[[], Any]]
 
 # Redraws attempted for an array item that duplicates an earlier one when
-# ``uniqueItems`` is set.
-UNIQUE_ITEMS_ATTEMPTS = 20
+# ``uniqueItems`` is set and the item schema has an open domain.
+UNIQUE_ITEMS_ATTEMPTS = 64
+
+
+def _json_key(value: Any) -> Any:
+    """A hashable key under which two values are equal as JSON values:
+    ``1`` and ``true`` differ, ``1`` and ``1.0`` do not."""
+    if isinstance(value, bool):
+        return ("bool", value)
+    if isinstance(value, (int, float)):
+        return ("num", float(value))
+    if isinstance(value, str):
+        return ("str", value)
+    if value is None:
+        return ("null",)
+    if isinstance(value, list):
+        return ("list", tuple(_json_key(v) for v in value))
+    if isinstance(value, dict):
+        return (
+            "dict",
+            tuple(sorted((str(k), _json_key(v)) for k, v in value.items())),
+        )
+    return ("other", repr(value))
 
 
 class JSONSchemaGenerator:
@@ -61,7 +88,7 @@ class JSONSchemaGenerator:
         schema: Schema,
         scenario: Optional[Scenario] = None,
         allof_merger: Callable[[Dict[str, Any]], Dict[str, Any]] = allof_merge,
-        max_depth: int = 6,
+        max_depth: int = DEFAULT_MAX_DEPTH,
         default_value_generator: GeneratorFunctionType = DefaultValueGenerator(),
         loader=jsonloader,
         generator_max_items: Optional[int] = None,
@@ -240,6 +267,8 @@ class JSONSchemaGenerator:
                 schema_data=resolved_schema,
                 schema_path=ref,
                 parent_schema=resolved_schema,
+                ref_path=ctx.ref_path + (ref,),
+                recursive=ctx.recursive or ref in ctx.ref_path,
             )
             return self._generate_node(ctx, scenario, builder)
 
@@ -249,7 +278,9 @@ class JSONSchemaGenerator:
             try:
                 val = self._apply_scenario(ctx, scenario)
                 return builder.set_value_at_path(path, val)
-            except KeyError:
+            except (KeyError, IndexError):
+                # The override reads data that is not generated yet
+                # (ctx.data is the live result): retry in the second pass.
                 builder.add_pending_field(ctx)
                 return None
 
@@ -285,8 +316,11 @@ class JSONSchemaGenerator:
     def _warn_depth_cut(
         self, ctx: Context, builder: SchemaGeneratorBuilder
     ) -> None:
-        """Warn once per generate() when ``max_depth`` cuts a property the
-        schema requires (or an array item needed for ``minItems``)."""
+        """Warn once per generate() when the ``max_depth`` hard cap cuts a
+        property the schema requires (or an array item needed for
+        ``minItems``). Recursion normally ends through the cycle rule
+        (see ``Context.recursive``); reaching the cap means the recursion
+        is required all the way down, so no finite sample can validate."""
         if builder.depth_warned:
             return
         segments = parse_path(ctx.prop_path)
@@ -304,8 +338,9 @@ class JSONSchemaGenerator:
         warnings.warn(
             f"max_depth={self.max_depth} reached at '{ctx.prop_path}': "
             "this required property is left out, so the sample will not "
-            "validate against the schema. Pass a larger max_depth to "
-            "JSONSchemaGenerator if the schema nests this deep. Further "
+            "validate against the schema. The schema requires its recursion "
+            "all the way down, or nests deeper than the cap: pass a larger "
+            "max_depth to JSONSchemaGenerator in the latter case. Further "
             "cuts in this generate() call are not reported.",
             UserWarning,
             stacklevel=2,
@@ -567,24 +602,34 @@ class JSONSchemaGenerator:
         schema = ctx.schema_data
         items = schema.get("items", {})
 
+        recursive = ctx.recursive or schema_marker(schema) in ctx.ref_path
         min_items = schema.get("minItems", 0)
-        bounds = [
-            b
-            for b in (schema.get("maxItems"), self.generator_max_items)
-            if b is not None
-        ]
-        max_items = min(bounds) if bounds else max(min_items, 2)
-        count = random.randint(min_items, max_items)
+        if recursive:
+            # The array schema recurs on the path: only the items the
+            # schema insists on, so that the recursion ends.
+            count = min_items
+        else:
+            bounds = [
+                b
+                for b in (schema.get("maxItems"), self.generator_max_items)
+                if b is not None
+            ]
+            max_items = min(bounds) if bounds else max(min_items, 2)
+            count = random.randint(min_items, max_items)
 
         # Derive schema_path for array items when items is a $ref
         item_schema_path: Optional[str] = None
         if isinstance(items, JsonRef):
             item_schema_path = items.__reference__["$ref"]
 
-        if not scenario.scenario_only:
+        # The root container is never an uncovered optional field, so it
+        # is written even in scenario_only mode.
+        if not scenario.scenario_only or not ctx.prop_path:
             builder.ensure_container(ctx.prop_path, [])
 
         unique = bool(schema.get("uniqueItems"))
+        domain = self._unique_domain(items) if unique else None
+        child_markers = ctx.ref_path + (schema_marker(schema),)
         result: List[Any] = []
         for i in range(count):
             child_ctx = ctx.copy(
@@ -593,15 +638,35 @@ class JSONSchemaGenerator:
                 parent_schema=schema,
                 schema_path=item_schema_path or ctx.schema_path,
                 data=builder.generated,
+                ref_path=child_markers,
+                recursive=recursive,
             )
             value = self._generate_node(child_ctx, scenario, builder)
             if unique:
                 value = self._ensure_unique_item(
-                    ctx, child_ctx, i, value, scenario, builder
+                    ctx, child_ctx, i, value, domain, scenario, builder
                 )
             result.append(value)
 
         return result
+
+    @staticmethod
+    def _unique_domain(items: Any) -> Optional[List[Any]]:
+        """The distinct values an item schema with a closed domain
+        (``const``, ``enum`` or boolean) can take, else ``None``."""
+        node = items.__subject__ if isinstance(items, JsonRef) else items
+        if not isinstance(node, dict):
+            return None
+        if "const" in node:
+            return [node["const"]]
+        if isinstance(node.get("enum"), list):
+            seen: Dict[Any, Any] = {}
+            for value in node["enum"]:
+                seen.setdefault(_json_key(value), value)
+            return list(seen.values())
+        if node.get("type") == "boolean":
+            return [True, False]
+        return None
 
     def _ensure_unique_item(
         self,
@@ -609,31 +674,57 @@ class JSONSchemaGenerator:
         child_ctx: Context,
         index: int,
         value: Any,
+        domain: Optional[List[Any]],
         scenario: Scenario,
         builder: SchemaGeneratorBuilder,
     ) -> Any:
-        """Redraw the item at *index* while it equals an earlier item of the
-        array at ``ctx.prop_path`` (``uniqueItems``)."""
+        """Make the item at *index* differ, as a JSON value, from the
+        earlier items of the array at ``ctx.prop_path`` (``uniqueItems``).
+
+        A closed domain (``const``, ``enum``, boolean) is sampled without
+        replacement; an open domain is redrawn up to
+        :data:`UNIQUE_ITEMS_ATTEMPTS` times. An item an override chose is
+        left alone. Raises ``ValueError`` when no distinct value exists.
+        """
         stored = builder.get_value_at_path(ctx.prop_path)
         if not isinstance(stored, list):
             return value
+
+        def current() -> Any:
+            return stored[index] if index < len(stored) else value
+
+        earlier = {_json_key(v) for v in stored[:index]}
+        item = current()
+        if item is None or _json_key(item) not in earlier:
+            return item
+        if self._scenario_defined(child_ctx.prop_path, scenario):
+            return item
+
+        if domain is not None:
+            unused = [v for v in domain if _json_key(v) not in earlier]
+            if not unused:
+                raise ValueError(
+                    f"uniqueItems at '{ctx.prop_path}': the item schema "
+                    f"allows only {len(domain)} distinct value(s), so no "
+                    f"value is left for index {index}"
+                )
+            chosen = copy.deepcopy(random.choice(unused))
+            builder.set_value_at_path(child_ctx.prop_path, chosen)
+            return chosen
+
         for _ in range(UNIQUE_ITEMS_ATTEMPTS):
-            current = stored[index] if index < len(stored) else value
-            if current is None or current not in stored[:index]:
-                return current
             # Reset the slot so containers are rebuilt from scratch rather
             # than merged with the previous draw.
             builder.set_value_at_path(child_ctx.prop_path, None)
             value = self._generate_node(child_ctx, scenario, builder)
-            stored = builder.get_value_at_path(ctx.prop_path)
-        warnings.warn(
+            item = current()
+            if item is None or _json_key(item) not in earlier:
+                return item
+        raise ValueError(
             f"uniqueItems at '{ctx.prop_path}': no value distinct from the "
             f"earlier items could be drawn for index {index} in "
-            f"{UNIQUE_ITEMS_ATTEMPTS} attempts.",
-            UserWarning,
-            stacklevel=2,
+            f"{UNIQUE_ITEMS_ATTEMPTS} attempts"
         )
-        return value
 
     def _handle_object(
         self, ctx: Context, scenario: Scenario, builder: SchemaGeneratorBuilder
@@ -649,13 +740,22 @@ class JSONSchemaGenerator:
         Returns:
             Dictionary of generated property values
         """
-        if not scenario.scenario_only:
+        # The root container is never an uncovered optional field, so it
+        # is written even in scenario_only mode.
+        if not scenario.scenario_only or not ctx.prop_path:
             builder.ensure_container(ctx.prop_path, {})
 
         props = ctx.schema_data.get("properties", {})
         if props is None:
             return {}
 
+        # The cycle rule: a schema node that recurs on the path is generated
+        # with its required properties only, so that recursion ends where
+        # the schema makes it optional.
+        recursive = (
+            ctx.recursive or schema_marker(ctx.schema_data) in ctx.ref_path
+        )
+        child_markers = ctx.ref_path + (schema_marker(ctx.schema_data),)
         required_set = set(ctx.schema_data.get("required") or [])
         result: Dict[str, Any] = {}
 
@@ -666,7 +766,9 @@ class JSONSchemaGenerator:
                     child_path, scenario, builder
                 ):
                     continue
-            elif scenario.minimal_mode and k not in required_set:
+            elif (
+                scenario.minimal_mode or recursive
+            ) and k not in required_set:
                 if not self._should_include_optional(
                     child_path, scenario, builder
                 ):
@@ -684,6 +786,8 @@ class JSONSchemaGenerator:
                 parent_schema=ctx.schema_data,
                 schema_path=child_schema_path,
                 data=builder.generated,
+                ref_path=child_markers,
+                recursive=recursive,
             )
             result[k] = self._generate_node(child_ctx, scenario, builder)
 
@@ -724,7 +828,7 @@ class JSONSchemaGenerator:
                     updated_ctx = ctx.copy(data=builder.get_result())
                     override = self._apply_scenario(updated_ctx, scenario)
                     builder.set_value_at_path(ctx.prop_path, override)
-                except KeyError:
+                except (KeyError, IndexError):
                     still_pending.append(ctx)
 
             builder.pending_fields = still_pending

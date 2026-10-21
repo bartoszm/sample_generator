@@ -199,6 +199,14 @@ class Context(BaseModel):
     schema_path: Optional[str] = None
     parent_schema: Optional[Dict[str, Any]] = None
     parent_ctx: Optional["Context"] = None
+    # Markers of the schema nodes on the path from the root ("$ref"
+    # strings and ids of inline schema dicts). A marker that repeats means
+    # the schema recursed into itself.
+    ref_path: Tuple[Any, ...] = ()
+    # True once a marker repeated on the path: from here down optional
+    # properties and array items beyond minItems are left out, which is
+    # what makes recursive schemas terminate.
+    recursive: bool = False
 
     def __getitem__(self, key: str) -> Any:
         return self.data[key]

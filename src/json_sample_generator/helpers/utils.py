@@ -8,6 +8,26 @@ from jsonref import JsonRef
 
 PathSegment = Union[str, int]
 
+# Hard safety cap on object nesting depth. Recursion is ended by the
+# cycle rule (a schema node that recurs on the current path is generated
+# with only its required members); the cap only catches schemas whose
+# recursion is required all the way down.
+DEFAULT_MAX_DEPTH = 50
+
+
+def schema_marker(node: Any) -> Any:
+    """Identity of a schema node for recursion detection: the ``$ref``
+    string of a :class:`JsonRef`, else the ``id`` of the node itself (which
+    also catches the reference cycles ``replace_refs(..., proxies=False)``
+    produces)."""
+    if isinstance(node, JsonRef):
+        try:
+            return node.__reference__["$ref"]
+        except Exception:
+            pass
+    return id(node)
+
+
 # One token of a property path: a dot-separated bare key, a bracketed
 # index, or a bracketed JSON string for keys that contain ".", "[", "]",
 # a quote or a backslash.

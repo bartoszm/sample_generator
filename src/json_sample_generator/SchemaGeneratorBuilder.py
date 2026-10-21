@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 from .helpers.utils import get_value_at_path, set_value_at_path
 from .models import Context, Schema
@@ -88,6 +88,10 @@ class SchemaGeneratorBuilder:
         as the generator enters them, even when nothing is written below.
         """
         existing = self.get_value_at_path(path)
+        # A root array replaces the initial {} (a dict cannot turn into a
+        # list in place). The root Context built before that still holds
+        # the old dict; child contexts are given builder.generated, so
+        # overrides always see the live result.
         root_becomes_list = (
             not path and existing == {} and isinstance(container, list)
         )
@@ -104,7 +108,7 @@ class SchemaGeneratorBuilder:
         """
         self.pending_fields.append(ctx)
 
-    def get_result(self) -> Dict[str, Any]:
+    def get_result(self) -> Any:
         """
         Get the final generated result.
 

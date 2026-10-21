@@ -1,10 +1,12 @@
 """Result assembly: empty containers are emitted, nested and root arrays
-and dotted property names work, ``uniqueItems`` is honoured, and a
-``max_depth`` cut of a required property warns."""
+and dotted property names work, ``ctx.data`` is a live view with
+forward references deferred, ``uniqueItems`` is honoured, recursion ends
+through the cycle rule and ``max_depth`` is only a hard cap."""
 
 from __future__ import annotations
 
 import random
+import time
 import warnings
 
 import pytest
@@ -19,9 +21,9 @@ def _obj(**props):
     return {"type": "object", "properties": props, "required": list(props)}
 
 
-def _generate_many(schema, n=30, scenario=None, **generator_kwargs):
+def _generate_many(schema, n=30, scenario=None, validate=True, **kwargs):
     """Generate *n* seeded samples, assert each validates, return them."""
-    gen = JSONSchemaGenerator(Schema(data=schema), **generator_kwargs)
+    gen = JSONSchemaGenerator(Schema(data=schema), **kwargs)
     validator = Draft7Validator(
         schema, format_checker=Draft7Validator.FORMAT_CHECKER
     )
@@ -30,8 +32,9 @@ def _generate_many(schema, n=30, scenario=None, **generator_kwargs):
         random.seed(seed)
         Faker.seed(seed)
         out = gen.generate(scenario)
-        errors = [e.message for e in validator.iter_errors(out)]
-        assert not errors, (seed, out, errors)
+        if validate:
+            errors = [e.message for e in validator.iter_errors(out)]
+            assert not errors, (seed, out, errors)
         outputs.append(out)
     return outputs
 
@@ -83,6 +86,20 @@ def test_scenario_only_keeps_uncovered_containers_absent():
         Scenario(name="s", scenario_only=True, overrides={"id": "1"})
     )
     assert out == {"id": "1"}
+
+
+def test_scenario_only_supports_a_root_array():
+    schema = {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 1,
+        "items": _obj(x={"type": "string"}, y={"type": "string"}),
+    }
+    gen = JSONSchemaGenerator(Schema(data=schema))
+    out = gen.generate(
+        Scenario(name="s", scenario_only=True, overrides={"[0].y": "Y"})
+    )
+    assert out == [{"y": "Y"}]
 
 
 def test_default_data_container_is_not_replaced():
@@ -178,6 +195,9 @@ def test_override_targets_quoted_key_and_nested_index():
     assert seen == ['["a.b"].c']
 
 
+# ---------------------------------------------------------------------------
+# ctx.data is a live view; forward references are deferred
+# ---------------------------------------------------------------------------
 def test_context_data_is_the_live_result_for_root_array_items():
     schema = {
         "type": "array",
@@ -191,6 +211,35 @@ def test_context_data_is_the_live_result_for_root_array_items():
     )
     out = JSONSchemaGenerator(Schema(data=schema)).generate(scenario)
     assert out == [{"id": 1}, {"id": 2}]
+
+
+def test_forward_reference_into_a_later_array_item_is_deferred():
+    schema = _obj(
+        items={
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": _obj(
+                price={"type": "integer", "minimum": 1},
+                total={"type": "integer"},
+            ),
+        }
+    )
+    scenario = Scenario(
+        name="f",
+        overrides={
+            "items[0].total": lambda ctx: ctx.data["items"][1]["price"]
+        },
+    )
+    out = JSONSchemaGenerator(Schema(data=schema)).generate(scenario)
+    assert out["items"][0]["total"] == out["items"][1]["price"]
+
+
+def test_forward_reference_to_a_later_sibling_is_deferred():
+    schema = _obj(a={"type": "integer"}, b={"type": "integer", "minimum": 1})
+    scenario = Scenario(name="f", overrides={"a": lambda ctx: ctx.data["b"]})
+    out = JSONSchemaGenerator(Schema(data=schema)).generate(scenario)
+    assert out["a"] == out["b"]
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +259,50 @@ def test_unique_items_with_enum():
         assert len(set(out["colors"])) == 2
 
 
+def test_unique_items_enum_is_sampled_without_replacement():
+    letters = list("abcdefghij")
+    schema = _obj(
+        xs={
+            "type": "array",
+            "minItems": 10,
+            "maxItems": 10,
+            "uniqueItems": True,
+            "items": {"type": "string", "enum": letters},
+        }
+    )
+    for out in _generate_many(schema, n=30):
+        assert sorted(out["xs"]) == letters
+
+
+def test_unique_items_distinguishes_booleans_from_numbers():
+    schema = _obj(
+        xs={
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "uniqueItems": True,
+            "items": {"enum": [0, 1, True, False]},
+        }
+    )
+    for out in _generate_many(schema, n=30):
+        keys = {(type(v), v) for v in out["xs"]}
+        assert len(keys) == 4, out
+
+
+def test_unique_items_with_open_domain():
+    schema = _obj(
+        xs={
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "uniqueItems": True,
+            "items": {"type": "integer", "minimum": 0, "maximum": 3},
+        }
+    )
+    for out in _generate_many(schema, n=30):
+        assert sorted(out["xs"]) == [0, 1, 2, 3]
+
+
 def test_unique_items_with_objects():
     schema = _obj(
         items={
@@ -224,24 +317,37 @@ def test_unique_items_with_objects():
         assert len({item["k"] for item in out["items"]}) == 3
 
 
-def test_unique_items_unsatisfiable_warns():
+def test_unique_items_unsatisfiable_raises():
+    schema = _obj(
+        xs={
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "uniqueItems": True,
+            "items": {"type": "string", "enum": ["a", "b"]},
+        }
+    )
+    with pytest.raises(ValueError, match="uniqueItems"):
+        JSONSchemaGenerator(Schema(data=schema)).generate()
+
+
+def test_unique_items_leaves_overridden_items_alone():
     schema = _obj(
         xs={
             "type": "array",
             "minItems": 2,
             "maxItems": 2,
             "uniqueItems": True,
-            "items": {"type": "string", "const": "same"},
+            "items": {"type": "string", "enum": ["a", "b"]},
         }
     )
-    gen = JSONSchemaGenerator(Schema(data=schema))
-    with pytest.warns(UserWarning, match="uniqueItems"):
-        out = gen.generate()
-    assert out["xs"] == ["same", "same"]
+    scenario = Scenario(name="o", overrides={"xs[0]": "a", "xs[1]": "a"})
+    out = JSONSchemaGenerator(Schema(data=schema)).generate(scenario)
+    assert out["xs"] == ["a", "a"]
 
 
 # ---------------------------------------------------------------------------
-# max_depth (issue 8)
+# Recursion ends through the cycle rule; max_depth is a hard cap (issue 8)
 # ---------------------------------------------------------------------------
 NAMES = [f"level{i}" for i in range(1, 8)] + ["leaf"]
 
@@ -257,15 +363,79 @@ def _required_chain(names):
     return node
 
 
-def test_depth_cut_on_required_property_warns_once():
-    gen = JSONSchemaGenerator(Schema(data=_required_chain(NAMES)))
-    with pytest.warns(UserWarning, match="max_depth=6") as record:
+def test_required_chain_of_eight_levels_is_generated_by_default():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _generate_many(_required_chain(NAMES), n=5)
+
+
+def test_optional_recursion_terminates_silently():
+    schema = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "children": {"type": "array", "items": {"$ref": "#"}},
+        },
+        "required": ["name"],
+    }
+    gen = JSONSchemaGenerator(Schema(data=schema, base_uri="file://rec.json"))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        out = gen.generate()
+
+    def depth(node):
+        return 1 + max((depth(c) for c in node.get("children", [])), default=0)
+
+    assert "name" in out
+    assert depth(out) <= 3
+
+
+def test_branching_optional_recursion_is_cheap():
+    schema = {
+        "type": "object",
+        "properties": {
+            "left": {"$ref": "#"},
+            "right": {"$ref": "#"},
+            "v": {"type": "integer"},
+        },
+        "required": ["v"],
+    }
+    gen = JSONSchemaGenerator(Schema(data=schema, base_uri="file://rec.json"))
+    started = time.perf_counter()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        out = gen.generate()
+    assert time.perf_counter() - started < 2
+    # the first occurrence of "#" below the root is generated in full; at
+    # the second occurrence the optional recursion is pruned
+    assert set(out["left"]) == {"left", "right", "v"}
+    assert out["left"]["left"] == {"v": out["left"]["left"]["v"]}
+
+
+def test_required_recursion_hits_the_cap_and_warns():
+    schema = {
+        "type": "object",
+        "properties": {"child": {"$ref": "#"}},
+        "required": ["child"],
+    }
+    gen = JSONSchemaGenerator(Schema(data=schema, base_uri="file://rec.json"))
+    with pytest.warns(UserWarning, match="max_depth=50"):
+        out = gen.generate()
+    levels, node = 0, out
+    while "child" in node:
+        node, levels = node["child"], levels + 1
+    assert levels >= 50
+
+
+def test_hard_cap_can_be_lowered_and_warns_once():
+    gen = JSONSchemaGenerator(Schema(data=_required_chain(NAMES)), max_depth=3)
+    with pytest.warns(UserWarning, match="max_depth=3") as record:
         out = gen.generate()
     assert len([w for w in record if "max_depth" in str(w.message)]) == 1
     node = out
-    for name in NAMES[:7]:
+    for name in NAMES[:4]:
         node = node[name]
-    assert node == {}, "containers above the cut are present, the leaf is not"
+    assert node == {}
 
 
 def test_depth_cut_on_optional_property_is_silent():
@@ -273,16 +443,12 @@ def test_depth_cut_on_optional_property_is_silent():
         "type": "object",
         "properties": {"child": {"$ref": "#"}, "name": {"type": "string"}},
     }
-    gen = JSONSchemaGenerator(Schema(data=schema, base_uri="file://rec.json"))
+    gen = JSONSchemaGenerator(
+        Schema(data=schema, base_uri="file://rec.json"), max_depth=2
+    )
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         gen.generate()
-
-
-def test_depth_can_be_raised():
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        _generate_many(_required_chain(NAMES), n=5, max_depth=20)
 
 
 def test_depth_counts_property_levels_not_array_indices():
@@ -300,4 +466,4 @@ def test_depth_counts_property_levels_not_array_indices():
         )
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        _generate_many(node, n=5)
+        _generate_many(node, n=5, max_depth=6)

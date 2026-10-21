@@ -205,9 +205,13 @@ A property name that contains `.`, `[`, `]`, `"` or `\` is written as a JSON str
 
 Objects and arrays are written to the result as soon as the generator enters them, so a required `{"type": "object"}` without properties yields `{}` and an array that draws zero items yields `[]`. In `scenario_only` mode a container still appears only when the scenario covers something inside it.
 
-## User guide: Nesting depth (`max_depth`)
+## User guide: Recursion, nesting depth and `uniqueItems`
 
-`JSONSchemaGenerator(max_depth=6)` stops descending once a path has more than six property levels; array indices do not count as a level. The limit is what ends recursive schemas (`"$ref": "#"`). When it cuts a property that is required, or an array item needed for `minItems`, the generator emits a `UserWarning` naming the path, once per `generate()` call, because the sample will not validate. Raise `max_depth` when a schema legitimately nests deeper.
+Recursive schemas (`"$ref": "#"`, or components that reference each other) terminate through a cycle rule rather than a depth limit: when a schema node recurs on the current path, it is generated with only its required properties and its `minItems` array items, so the recursion stops wherever the schema makes it optional. Plain deep nesting is generated in full.
+
+`JSONSchemaGenerator(max_depth=50)` remains as a hard safety cap on property levels (array indices do not count). A schema whose recursion is required all the way down, such as `{"properties": {"child": {"$ref": "#"}}, "required": ["child"]}`, has no finite valid sample: the cap ends it and a `UserWarning` names the path, once per `generate()` call. The scenario and break enumerators apply the same cycle rule and cap.
+
+`uniqueItems` is honoured by comparing items as JSON values (`1` and `true` differ). An item schema with a closed domain (`enum`, `const`, boolean) is sampled without replacement; an open domain is redrawn. When no distinct value exists, for example an `enum` of two values with `minItems: 3`, generation raises `ValueError`.
 
 ## Contributing
 

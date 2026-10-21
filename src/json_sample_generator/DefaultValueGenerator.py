@@ -6,7 +6,7 @@ import random
 import string
 from datetime import timezone
 from fractions import Fraction
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import rstr
 from faker import Faker
@@ -37,11 +37,11 @@ DEFAULT_REPEAT_LIMIT = 100
 
 # Formats whose values have a fixed shape: a length constraint can only be
 # checked, not steered, so an impossible one raises.
-FIXED_SHAPE_FORMATS = frozenset(
-    {"uuid", "ipv4", "ipv6", "date", "time", "date-time"}
+FIXED_SHAPE_FORMATS = frozenset({"uuid", "ipv6", "date", "time", "date-time"})
+# Formats whose values can be built to any reachable length.
+FREE_FORM_FORMATS = frozenset(
+    {"email", "uri", "url", "hostname", "phone", "ipv4"}
 )
-# Formats whose values can be built to any reasonable length.
-FREE_FORM_FORMATS = frozenset({"email", "uri", "url", "hostname", "phone"})
 
 _LETTERS = string.ascii_lowercase
 _ALNUM = string.ascii_lowercase + string.digits
@@ -128,6 +128,18 @@ def _phone_of_length(n: int) -> str:
     return "+" + _random_chars(n - 1, string.digits)
 
 
+def _ipv4_of_length(n: int) -> str:
+    """A dotted-quad IPv4 address of exactly *n* characters (7 <= n <= 15):
+    four octets of one to three digits."""
+    if not 7 <= n <= 15:
+        raise ValueError(f"no IPv4 address has length {n}")
+    digits = [1, 1, 1, 1]
+    for _ in range(n - 7):
+        digits[random.choice([i for i in range(4) if digits[i] < 3])] += 1
+    ranges = {1: (0, 9), 2: (10, 99), 3: (100, 255)}
+    return ".".join(str(random.randint(*ranges[d])) for d in digits)
+
+
 # (builder, shortest, longest) per free-form format
 _FREE_FORM_BUILDERS: Dict[str, Tuple[Callable[[int], str], int, int]] = {
     "email": (_email_of_length, 3, 318),
@@ -135,6 +147,7 @@ _FREE_FORM_BUILDERS: Dict[str, Tuple[Callable[[int], str], int, int]] = {
     "uri": (_uri_of_length, 10, 100_000),
     "url": (_uri_of_length, 10, 100_000),
     "phone": (_phone_of_length, 1, 100_000),
+    "ipv4": (_ipv4_of_length, 7, 15),
 }
 
 
@@ -199,11 +212,11 @@ class DefaultValueGenerator:
 
         ``minLength``/``maxLength`` apply in every branch:
 
-        * fixed-shape formats (``uuid``, ``ipv4``, ``ipv6``, ``date``,
-          ``time``, ``date-time``) are drawn a few times and must fit;
+        * fixed-shape formats (``uuid``, ``ipv6``, ``date``, ``time``,
+          ``date-time``) are drawn a few times and must fit;
         * free-form formats (``email``, ``uri``, ``url``, ``hostname``,
-          ``phone``) are drawn from Faker first and then built to a
-          fitting length;
+          ``phone``, ``ipv4``) are drawn from Faker first and then built
+          to a fitting length;
         * a ``pattern`` is drawn with its open-ended repeats capped at
           ``maxLength`` (and floored at ``minLength`` as a second try);
         * unknown formats are annotations and take the plain path.
@@ -319,6 +332,11 @@ class DefaultValueGenerator:
         max_length: Optional[int],
         schema: Dict[str, Any],
     ) -> Callable:
+        """Draw from *pattern* with open-ended repeats capped at
+        ``maxLength`` (else ``max(minLength, 100)``), then with them
+        floored at ``minLength``. Nested open-ended repeats such as
+        ``(a+)+`` draw each level up to the cap independently, so a tight
+        ``maxLength`` may still be missed and raise."""
         limit = (
             max_length
             if max_length is not None
@@ -330,7 +348,12 @@ class DefaultValueGenerator:
         floored = _BoundedXeger(limit, floor=min_length or 0)
 
         def draw() -> str:
-            for xeger in (capped, floored):
+            passes = (capped, floored)
+            if min_length is not None and min_length > DEFAULT_REPEAT_LIMIT:
+                # The cap is then at least min_length, so a capped draw
+                # rarely reaches it and each one is long: floor first.
+                passes = (floored, capped)
+            for xeger in passes:
                 for _ in range(STRING_ATTEMPTS):
                     value = xeger.xeger(pattern)
                     if self._fits(value, min_length, max_length):
@@ -348,9 +371,13 @@ class DefaultValueGenerator:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _to_number(value: Any) -> Optional[float]:
+    def _to_number(value: Any) -> Optional[Union[int, float]]:
+        """A numeric bound as given: ints stay exact (bounds such as the
+        int64 maximum lie above 2**53 and must not go through float)."""
         if value is None or isinstance(value, bool):
             return None
+        if isinstance(value, int):
+            return value
         try:
             number = float(value)
         except (TypeError, ValueError):
@@ -359,7 +386,7 @@ class DefaultValueGenerator:
 
     def _bound(
         self, schema: Dict[str, Any], key: str
-    ) -> Tuple[Optional[float], bool]:
+    ) -> Tuple[Optional[Union[int, float]], bool]:
         """Return ``(value, exclusive)`` for ``minimum`` or ``maximum``.
 
         Handles both the draft-4 / OpenAPI 3.0 boolean form of

@@ -442,7 +442,8 @@ def test_unknown_format_takes_the_plain_string_path():
     [
         {"type": "string", "format": "email", "maxLength": 2},
         {"type": "string", "format": "uuid", "maxLength": 10},
-        {"type": "string", "format": "ipv4", "minLength": 20},
+        {"type": "string", "format": "ipv4", "minLength": 16},
+        {"type": "string", "format": "ipv4", "maxLength": 6},
         {"type": "string", "format": "date", "maxLength": 5},
         {"type": "string", "pattern": "^[a-z]{10}$", "maxLength": 5},
         {"type": "string", "pattern": "^[a-z]{2,4}$", "minLength": 10},
@@ -522,6 +523,8 @@ E2E_CASES = {
     "date": {"type": "string", "format": "date"},
     "ipv4": {"type": "string", "format": "ipv4"},
     "ipv6": {"type": "string", "format": "ipv6"},
+    "ipv4 maxLength 11": {"type": "string", "format": "ipv4", "maxLength": 11},
+    "int64 maximum": {"type": "integer", "maximum": 2**63 - 1},
 }
 
 
@@ -549,3 +552,65 @@ def test_generated_sample_validates(prop_schema):
         out = gen.generate()
         errors = [e.message for e in validator.iter_errors(out)]
         assert not errors, (seed, out, errors)
+
+
+# ---------------------------------------------------------------------------
+# Round 2: large integers, ipv4 built to length, pattern pass order
+# ---------------------------------------------------------------------------
+INT64_MAX = 2**63 - 1
+
+
+def test_integer_bounds_above_2_53_are_exact():
+    assert set(
+        _samples(
+            {"type": "integer", "minimum": INT64_MAX, "maximum": INT64_MAX}
+        )
+    ) == {INT64_MAX}
+    values = _samples({"type": "integer", "maximum": INT64_MAX})
+    assert all(isinstance(v, int) and v <= INT64_MAX for v in values)
+    values = _samples(
+        {
+            "type": "integer",
+            "minimum": INT64_MAX - 3,
+            "exclusiveMaximum": INT64_MAX,
+        }
+    )
+    assert set(values) <= {INT64_MAX - 3, INT64_MAX - 2, INT64_MAX - 1}
+    assert len(set(values)) == 3
+
+
+@pytest.mark.parametrize(
+    "schema, low, high",
+    [
+        ({"type": "string", "format": "ipv4", "maxLength": 7}, 7, 7),
+        ({"type": "string", "format": "ipv4", "maxLength": 11}, 7, 11),
+        ({"type": "string", "format": "ipv4", "maxLength": 12}, 7, 12),
+        ({"type": "string", "format": "ipv4", "minLength": 15}, 15, 15),
+        (
+            {
+                "type": "string",
+                "format": "ipv4",
+                "minLength": 13,
+                "maxLength": 14,
+            },
+            13,
+            14,
+        ),
+    ],
+)
+def test_ipv4_is_built_to_length(schema, low, high):
+    values = _samples(schema, n=100)
+    assert all(low <= len(v) <= high for v in values)
+    _assert_valid(schema, values)
+
+
+def test_pattern_with_huge_min_length_is_fast():
+    import time
+
+    gen = DefaultValueGenerator()(
+        {"type": "string", "pattern": "^[a-z]+$", "minLength": 100_000}
+    )
+    started = time.perf_counter()
+    value = gen()
+    assert time.perf_counter() - started < 1
+    assert len(value) >= 100_000 and re.fullmatch("[a-z]+", value)

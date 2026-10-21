@@ -150,15 +150,19 @@ would fail validation.
   `0 < x < 0.4, multipleOf: 0.1` raises when the only candidate, `0.3`,
   fails `0.3 / 0.1` in floating point.
 - `minLength`, `maxLength` — applied on their own and together with
-  `pattern` or `format`. `email`, `hostname`, `uri`, `url` and `phone` are
-  drawn from Faker first and then built to a fitting length (`a@xmi.vw`
-  for `maxLength: 12`). Fixed-shape formats (`uuid`, `ipv4`, `ipv6`,
-  `date`, `time`, `date-time`) must fit as they are, so `uuid` with
-  `maxLength: 10` raises. A `pattern` is drawn with its open-ended repeats
-  capped at `maxLength` and, as a second try, floored at `minLength`, so
-  `^[a-z]{200,}$` and `^[a-z]+$` with `minLength: 150` both work.
+  `pattern` or `format`. `email`, `hostname`, `uri`, `url`, `phone` and
+  `ipv4` are drawn from Faker first and then built to a fitting length
+  (`a@xmi.vw` for `maxLength: 12`, `1.2.3.4` for `maxLength: 7`).
+  Fixed-shape formats (`uuid`, `ipv6`, `date`, `time`, `date-time`) must
+  fit as they are, so `uuid` with `maxLength: 10` raises. A `pattern` is
+  drawn with its open-ended repeats capped at `maxLength` and floored at
+  `minLength`, so `^[a-z]{200,}$` and `^[a-z]+$` with `minLength: 150`
+  both work; nested open-ended repeats such as `(a+)+` draw each level
+  independently, so a tight `maxLength` may be missed and raise.
   `minLength > maxLength` raises. Unknown formats are annotations and take
   the plain string path.
+- Integer bounds stay exact above 2**53 (`format: int64` with
+  `maximum: 9223372036854775807` works).
 - `format` — `date-time` and `time` values carry a UTC offset
   (`2025-09-28T21:09:04.826286+00:00`, `19:47:52Z`), as RFC 3339 requires.
 

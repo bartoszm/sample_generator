@@ -96,6 +96,32 @@ def _json_key(value: Any) -> Any:
         )
     return ("other", repr(value))
 
+# Keywords next to a oneOf/anyOf that do not constrain the instance and
+# therefore need not be merged into the chosen branch. Vendor extensions
+# (``x-...``) are treated the same way.
+_VARIANT_ANNOTATIONS = frozenset(
+    {
+        "discriminator",
+        "title",
+        "description",
+        "$comment",
+        "examples",
+        "example",
+        "default",
+        "deprecated",
+        "readOnly",
+        "writeOnly",
+        "$schema",
+        "$id",
+        "definitions",
+        "$defs",
+        "components",
+        "xml",
+        "externalDocs",
+        "nullable",
+    }
+)
+
 
 class JSONSchemaGenerator:
     """
@@ -411,20 +437,109 @@ class JSONSchemaGenerator:
     def _generate_any_of(
         self, ctx: Context, scenario: Scenario, builder: SchemaGeneratorBuilder
     ):
-        schemas = ctx.schema_data.get("anyOf", [])
-        selected = self._resolve_variant(ctx, schemas, scenario, "anyOf")
-        return self._generate_node(
-            ctx.copy(schema_data=selected), scenario, builder
-        )
+        return self._generate_variant(ctx, scenario, builder, "anyOf")
 
     def _generate_one_of(
         self, ctx: Context, scenario: Scenario, builder: SchemaGeneratorBuilder
     ):
-        schemas = ctx.schema_data.get("oneOf", [])
-        selected = self._resolve_variant(ctx, schemas, scenario, "oneOf")
-        return self._generate_node(
-            ctx.copy(schema_data=selected), scenario, builder
-        )
+        return self._generate_variant(ctx, scenario, builder, "oneOf")
+
+    def _generate_variant(
+        self,
+        ctx: Context,
+        scenario: Scenario,
+        builder: SchemaGeneratorBuilder,
+        kind: str,
+    ) -> Any:
+        """Generate a node from the branch chosen for a oneOf/anyOf.
+
+        JSON Schema evaluates the keywords next to ``oneOf``/``anyOf``
+        together with the chosen branch, so when the parent carries
+        constraints of its own (``type``, ``properties``, ``required``,
+        ``format``...) the two are merged the way ``allOf`` is before
+        generating. A parent that holds nothing but the branch list and
+        annotations (``discriminator``, ``title``...) recurses into the
+        branch directly, which keeps ``$ref`` identity for
+        ``schema_path`` tracking.
+
+        For ``oneOf`` the instance must match exactly one branch, so the
+        properties that only the other branches require are left out
+        unless the scenario names them (see
+        :meth:`_drop_properties_of_other_branches`).
+        """
+        parent = ctx.schema_data
+        schemas = parent.get(kind, [])
+        selected = self._resolve_variant(ctx, schemas, scenario, kind)
+
+        siblings = {
+            k: v
+            for k, v in parent.items()
+            if k != kind
+            and k not in _VARIANT_ANNOTATIONS
+            and not k.startswith("x-")
+        }
+        if not siblings:
+            return self._generate_node(
+                ctx.copy(schema_data=selected), scenario, builder
+            )
+
+        merged = self.allof_merger({"allOf": [siblings, selected]})
+        if kind == "oneOf":
+            self._drop_properties_of_other_branches(
+                ctx, merged, schemas, selected, scenario, builder
+            )
+
+        updates: Dict[str, Any] = {
+            "schema_data": merged,
+            "parent_schema": parent,
+        }
+        if isinstance(selected, JsonRef):
+            updates["schema_path"] = selected.__reference__["$ref"]
+        return self._generate_node(ctx.copy(**updates), scenario, builder)
+
+    def _drop_properties_of_other_branches(
+        self,
+        ctx: Context,
+        merged: Dict[str, Any],
+        schemas: List[Any],
+        selected: Any,
+        scenario: Scenario,
+        builder: SchemaGeneratorBuilder,
+    ) -> None:
+        """Remove from ``merged["properties"]`` the properties that only
+        the non-selected ``oneOf`` branches require.
+
+        Generating them would make the instance satisfy more than one
+        branch and fail ``oneOf``. A property is kept when the merged
+        schema requires it or when the scenario names it (override,
+        ``default_data`` or selector), since that is an explicit request.
+        """
+        props = merged.get("properties")
+        if not isinstance(props, dict):
+            return
+        required = set(merged.get("required") or [])
+        drop = set()
+        for branch in schemas:
+            if branch is selected:
+                continue
+            node = (
+                branch.__subject__ if isinstance(branch, JsonRef) else branch
+            )
+            if not isinstance(node, dict):
+                continue
+            for name in node.get("required") or []:
+                if name in required or name not in props:
+                    continue
+                child_path = join_path(ctx.prop_path, name)
+                if self._should_include_optional(
+                    child_path, scenario, builder
+                ):
+                    continue
+                drop.add(name)
+        if drop:
+            merged["properties"] = {
+                k: v for k, v in props.items() if k not in drop
+            }
 
     def _resolve_variant(
         self,

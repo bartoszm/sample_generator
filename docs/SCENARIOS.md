@@ -141,6 +141,33 @@ Scenario(
 - `bool` returns from a selector raise `TypeError` (Python's `isinstance(True, int)` gotcha).
 - If no selector matches a path, a random candidate is chosen (default behaviour).
 
+### How the chosen branch is generated
+
+JSON Schema evaluates the keywords next to `oneOf`/`anyOf` together with
+the chosen branch, and so does the generator: when the parent carries
+constraints of its own (`type`, `properties`, `required`, `format`, ...)
+they are merged with the branch the way `allOf` is before generating.
+These common idioms therefore work:
+
+```python
+# an exclusive choice of properties
+{
+    "type": "object",
+    "properties": {"name": {"type": "string"}, "code": {"type": "integer"}},
+    "oneOf": [{"required": ["name"]}, {"required": ["code"]}],
+}
+
+# a choice of format
+{"type": "string", "oneOf": [{"format": "ipv4"}, {"format": "ipv6"}]}
+```
+
+For `oneOf` the instance must match exactly one branch, so a property that
+only the *other* branches require is left out of the generated object,
+unless an override, `default_data` or a selector names it. A parent that
+holds nothing but the branch list and annotations (`discriminator`,
+`title`, `description`, ...) is generated from the branch alone, exactly
+as before, so `$ref` branches keep their `schema_path`.
+
 
 ## Reusing and composing scenarios
 There are two convenient approaches:

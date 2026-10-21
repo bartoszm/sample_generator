@@ -245,11 +245,14 @@ def test_generator_max_items_with_no_schema_maxitems():
 
 
 def test_generator_max_items_defaults_to_none():
+    # minItems keeps the draw from producing an empty array, which the
+    # generator does not write to the result yet (#3)
     schema_data = {
         "type": "object",
         "properties": {
             "items": {
                 "type": "array",
+                "minItems": 1,
                 "maxItems": 100,
                 "items": {"type": "string"},
             }

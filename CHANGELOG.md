@@ -4,11 +4,11 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog.
 
-## [Unreleased]
+## [0.6.0] - 2026-10-21
 
 Addresses the nine issues reported against 0.5.0, referenced below as
 `issue #N`. The dependency and CI entries come from pull request #10, the
-rest from pull requests #11, #12 and #13, so the release follows all four.
+rest from pull requests #11, #12 and #13.
 
 ### Added
 

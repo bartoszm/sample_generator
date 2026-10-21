@@ -96,6 +96,15 @@ rest from pull requests #11, #12 and #13, so the release follows all four.
   rule set is pinned in `pyproject.toml` (`E4`, `E7`, `E9`, `F`).
 - Break scenarios resolve `items[0].name` to the item's schema instead of
   stopping at the array.
+- `oneOf`/`anyOf` branches are generated together with the keywords next
+  to them (`type`, `properties`, `required`, `format`, ...), so branches
+  that only add `required` or `format` work. For `oneOf`, properties that
+  only the other branches require are left out, whether or not the parent
+  carries keywords of its own. `allOf` (and the parent/branch merge) keeps
+  both definitions of a property defined in several parts, so a part can
+  refine another's property; a property re-declared with the same `$ref`
+  stays a single reference, which keeps its `schema_path` and the
+  recursion rule intact.
 
 ## [0.5.0] - 2026-05-07
 

@@ -211,6 +211,14 @@ class Context(BaseModel):
     # object handler leaves them out unless the object itself requires
     # them or the scenario names them. Applies to this node only.
     excluded_properties: Tuple[str, ...] = ()
+    # ``(property, value)`` pairs a discriminator gives this object: the
+    # object handler writes the value right after it generated the
+    # property, so the properties that follow (and the second pass) see
+    # the name of the branch. Applies to this node only.
+    pinned_properties: Tuple[Tuple[str, Any], ...] = ()
+    # False while a uniqueItems redraw gives up naming branches (a few
+    # names cannot make many items distinct). Inherited by the subtree.
+    discriminator_naming: bool = True
 
     def __getitem__(self, key: str) -> Any:
         return self.data[key]

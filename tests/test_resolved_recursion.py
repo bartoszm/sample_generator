@@ -597,9 +597,15 @@ def test_the_source_survives_a_copy_of_the_schema():
     assert JSONSchemaGenerator(schema).generate()
 
 
-def test_a_fragment_that_shares_a_key_with_its_container_generates(
-    tmp_path,
-):
+def _depths(sample, key):
+    depth = 0
+    while isinstance(sample.get(key), dict):
+        sample = sample[key]
+        depth += 1
+    return depth
+
+
+def test_a_fragment_that_shares_a_key_with_its_container_generates(tmp_path):
     # the schema has a "definitions" key of its own, so it cannot be the
     # root in place beside the document's "definitions"
     raw = {
@@ -617,8 +623,129 @@ def test_a_fragment_that_shares_a_key_with_its_container_generates(
     path = tmp_path / "doc.json"
     path.write_text(json.dumps(raw))
     schema = Schema.from_raw_data(raw, f"{path.as_uri()}#/definitions/Node")
+    outs = []
+    for seed in range(20):
+        random.seed(seed)
+        outs.append(JSONSchemaGenerator(schema).generate())
+    assert all(isinstance(out["leaf"], str) for out in outs)
+    # the recursion generates, and ends
+    assert any("child" in out for out in outs)
+    assert all(_depths(out, "child") <= 3 for out in outs)
+
+
+def test_a_ref_into_a_top_level_key_other_than_components_resolves():
+    oas = _oas(
+        Node={
+            "type": "object",
+            "required": ["p"],
+            "properties": {
+                "p": {
+                    "$ref": "#/paths/~1x/get/responses/200/content/"
+                    "application~1json/schema"
+                },
+                "kids": {"type": "array", "items": {"$ref": REF + "Node"}},
+            },
+        }
+    )
+    oas["paths"] = {
+        "/x": {
+            "get": {
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {"schema": {"type": "string"}}
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out = JSONSchemaGenerator(Schema.from_oas(oas, name="Node")).generate()
+    assert isinstance(out["p"], str)
+
+
+def _write(tmp_path, raw):
+    path = tmp_path / "doc.json"
+    path.write_text(json.dumps(raw))
+    return path.as_uri()
+
+
+def test_a_hash_reference_under_a_fragment_is_the_document(tmp_path):
+    raw = {
+        "definitions": {
+            "A": {
+                "type": "object",
+                "required": ["v", "kid"],
+                "properties": {
+                    "v": {"type": "integer"},
+                    "kid": {"$ref": "#"},
+                },
+            }
+        },
+        "properties": {"p": {"type": "integer"}},
+    }
+    schema = Schema.from_raw_data(
+        raw, _write(tmp_path, raw) + "#/definitions/A"
+    )
     out = JSONSchemaGenerator(schema).generate()
-    assert isinstance(out["leaf"], str)
+    # "#" is the document, which holds "p", not the schema "A"
+    assert set(out["kid"]) == {"p"}
+
+
+def test_a_fragment_at_a_keyword_does_not_take_in_the_documents_keyword(
+    tmp_path,
+):
+    raw = {
+        "type": "object",
+        "properties": {
+            "a": {
+                "type": "object",
+                "required": ["n"],
+                "properties": {
+                    "n": {"type": "integer"},
+                    "k": {"$ref": "#/properties/a"},
+                },
+            },
+            "b": {"type": "string"},
+        },
+    }
+    schema = Schema.from_raw_data(
+        raw, _write(tmp_path, raw) + "#/properties/a"
+    )
+    for seed in range(10):
+        random.seed(seed)
+        out = JSONSchemaGenerator(schema).generate()
+        assert "b" not in out and "a" not in out
+
+
+def test_a_fragment_through_a_ref_generates(tmp_path):
+    raw = {
+        "definitions": {
+            "A": {
+                "type": "object",
+                "required": ["n"],
+                "properties": {
+                    "n": {"type": "integer"},
+                    "kid": {"$ref": "#/definitions/A"},
+                },
+            },
+            "W": {
+                "type": "object",
+                "properties": {"a": {"$ref": "#/definitions/A"}},
+            },
+        }
+    }
+    schema = Schema.from_raw_data(
+        raw,
+        _write(tmp_path, raw) + "#/definitions/W/properties/a/properties/kid",
+    )
+    assert "n" in JSONSchemaGenerator(schema).generate()
+
+
+def test_the_schema_of_a_generator_generates_again():
+    generator = JSONSchemaGenerator(Schema.from_oas(ITEM_OAS, name="Item"))
+    again = JSONSchemaGenerator(generator.schema)
+    assert again.generate() is not None
 
 
 # ---------------------------------------------------------------------------
@@ -631,21 +758,37 @@ def test_unresolved_root_is_the_document_without_a_pointer():
     assert unresolved_root(doc, ()) == doc
 
 
-def test_unresolved_root_carries_the_containers_the_refs_point_into():
+def test_unresolved_root_carries_every_top_level_key():
     doc = {
         "openapi": "3.1.0",
         "paths": {"/x": {}},
         "components": {"schemas": {"A": {"type": "object"}}},
-        "$defs": {"D": {"type": "string"}},
     }
     root = unresolved_root(doc, ("components", "schemas", "A"))
-    assert root == {
-        "type": "object",
-        "components": doc["components"],
-        "$defs": doc["$defs"],
-    }
+    assert root == {"type": "object", **doc}
 
 
-def test_unresolved_root_gives_up_on_a_key_of_the_same_name():
-    doc = {"definitions": {"A": {"definitions": {}, "type": "object"}}}
-    assert unresolved_root(doc, ("definitions", "A")) is None
+@pytest.mark.parametrize(
+    "doc, pointer",
+    [
+        # the schema has a key of the document's top level
+        ({"definitions": {"A": {"definitions": {}}}}, ("definitions", "A")),
+        # the document is a schema itself
+        ({"type": "object", "definitions": {"A": {}}}, ("definitions", "A")),
+        # "#" is the document, not the schema
+        (
+            {"definitions": {"A": {"properties": {"k": {"$ref": "#"}}}}},
+            ("definitions", "A"),
+        ),
+        # the pointer passes a $ref
+        (
+            {"definitions": {"W": {"$ref": "#/definitions/A"}, "A": {}}},
+            ("definitions", "W", "properties"),
+        ),
+        # the pointer leads nowhere
+        ({"definitions": {}}, ("definitions", "A")),
+    ],
+    ids=["same-key", "schema-document", "hash-ref", "through-ref", "missing"],
+)
+def test_unresolved_root_gives_up_when_it_cannot_be_the_root(doc, pointer):
+    assert unresolved_root(doc, pointer) is None

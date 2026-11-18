@@ -37,7 +37,9 @@ The format is based on Keep a Changelog.
   document with that component as its root, and a schema from
   `Schema.from_raw_data` the same as the schema it was loaded from. A
   `Schema` built by hand that contains itself raises a `ValueError` that
-  names the loaders, instead of a `RecursionError`.
+  names the loaders, instead of a `RecursionError`. The loaders keep the
+  document, not a copy: it must not be changed while the schemas are in
+  use.
   Any other schema is resolved as before (issue #16).
 
 ## [0.6.0] - 2026-10-21

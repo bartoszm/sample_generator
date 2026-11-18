@@ -89,3 +89,8 @@ def test_unwrap_ref() -> None:
 def test_unwrap_ref_returns_an_unresolvable_ref_as_it_is() -> None:
     ref = replace_refs({"b": {"$ref": "#/missing"}})["b"]
     assert unwrap_ref(ref) is ref
+
+
+def test_contains_itself_takes_a_dangling_ref_for_a_leaf() -> None:
+    data = replace_refs({"properties": {"a": {"$ref": "#/missing"}}})
+    assert not contains_itself(data)

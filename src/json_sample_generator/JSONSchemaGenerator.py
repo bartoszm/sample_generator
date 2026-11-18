@@ -168,6 +168,9 @@ class JSONSchemaGenerator:
             data=cast(Dict[Any, Any], dict(cast(Any, loaded))),
             base_uri=schema.base_uri,
         )
+        # Its data may still contain itself (the generator reads it, as
+        # another may): keep the document it can be generated from.
+        self.schema._source = schema._source
 
         self.scenario = scenario or Scenario(name="default")
         self.default_value_generator = default_value_generator
@@ -189,14 +192,13 @@ class JSONSchemaGenerator:
         # A reference is local to the document: jsonref resolves it only
         # against a base URI without a fragment.
         base = uri.split("#", 1)[0]
+        # replace_refs builds new containers, so the document is not
+        # copied first; it must not change while schemas loaded from it
+        # are in use, as for Schema.from_raw_data, which resolves lazily.
         root = unresolved_root(document, pointer)
         if root is not None:
-            return replace_refs(
-                copy.deepcopy(root), base_uri=base, loader=loader
-            )
-        loaded = replace_refs(
-            copy.deepcopy(document), base_uri=base, loader=loader
-        )
+            return replace_refs(root, base_uri=base, loader=loader)
+        loaded = replace_refs(document, base_uri=base, loader=loader)
         for segment in pointer:
             loaded = loaded[segment]
         return loaded

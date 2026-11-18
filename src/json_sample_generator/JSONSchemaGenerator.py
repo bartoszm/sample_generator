@@ -23,11 +23,15 @@ from .helpers.utils import (
     DEFAULT_MAX_DEPTH,
     MAX_REENTRIES,
     allof_ref_markers,
+    contains_itself,
     join_path,
     parse_path,
     path_startswith,
     schema_marker,
+    unresolved_root,
+    unwrap_ref,
 )
+from .helpers.variants import variant_siblings
 from .models import Context, Scenario, Schema
 from .SchemaGeneratorBuilder import SchemaGeneratorBuilder
 
@@ -147,33 +151,6 @@ def _json_key(value: Any) -> Any:
     return ("other", repr(value))
 
 
-# Keywords next to a oneOf/anyOf that do not constrain the instance and
-# therefore need not be merged into the chosen branch. Vendor extensions
-# (``x-...``) are treated the same way.
-_VARIANT_ANNOTATIONS = frozenset(
-    {
-        "discriminator",
-        "title",
-        "description",
-        "$comment",
-        "examples",
-        "example",
-        "default",
-        "deprecated",
-        "readOnly",
-        "writeOnly",
-        "$schema",
-        "$id",
-        "definitions",
-        "$defs",
-        "components",
-        "xml",
-        "externalDocs",
-        "nullable",
-    }
-)
-
-
 class JSONSchemaGenerator:
     """
     JSON schema sample data generator that creates example data based on
@@ -190,29 +167,64 @@ class JSONSchemaGenerator:
         loader=jsonloader,
         generator_max_items: Optional[int] = None,
     ):
-        self.schema = Schema(
-            data=cast(Dict[Any, Any], copy.deepcopy(schema.data)),
-            base_uri=schema.base_uri,
-        )
         self.max_depth = max_depth
         self.generator_max_items = generator_max_items
 
         uri = (
-            self.schema.base_uri
-            if self.schema.base_uri is not None
+            schema.base_uri
+            if schema.base_uri is not None
             else "file://dummy.json"
         )
-
-        loaded = replace_refs(self.schema.data, base_uri=uri, loader=loader)
-        # Ensure schema.data is a dictionary after replacing references
-        if isinstance(loaded, dict):
-            self.schema.data = cast(Dict[Any, Any], loaded)
+        if contains_itself(schema.data):
+            # Schema.from_oas and Schema.from_raw_data resolve every $ref
+            # up front, so a recursive one arrives as a structure that
+            # contains itself, which replace_refs, walking it as a tree,
+            # would never finish. It is generated from the document it was
+            # loaded from instead, as from any schema written with $ref.
+            loaded = self._load_source(schema, uri, loader)
         else:
-            self.schema.data = cast(Dict[Any, Any], dict(cast(Any, loaded)))
+            loaded = replace_refs(
+                copy.deepcopy(schema.data), base_uri=uri, loader=loader
+            )
+        # Ensure schema.data is a dictionary after replacing references
+        self.schema = Schema(
+            data=cast(Dict[Any, Any], dict(cast(Any, loaded))),
+            base_uri=schema.base_uri,
+        )
+        # Its data may still contain itself (the generator reads it, as
+        # another may): keep the document it can be generated from.
+        self.schema._source = schema._source
 
         self.scenario = scenario or Scenario(name="default")
         self.default_value_generator = default_value_generator
         self.allof_merger = allof_merger
+
+    @staticmethod
+    def _load_source(schema: Schema, uri: str, loader: Any) -> Any:
+        """*schema*, a schema that contains itself, resolved from the
+        document it was loaded from, with its ``$ref``s unresolved."""
+        if schema._source is None:
+            raise ValueError(
+                "The schema contains itself, which only a schema loaded by "
+                "Schema.from_oas or Schema.from_raw_data can be generated "
+                "from: they keep the document with its $refs unresolved. "
+                "Load the schema with one of them, or leave its $refs "
+                "unresolved."
+            )
+        document, pointer = schema._source
+        # A reference is local to the document: jsonref resolves it only
+        # against a base URI without a fragment.
+        base = uri.split("#", 1)[0]
+        # replace_refs builds new containers, so the document is not
+        # copied first; it must not change while schemas loaded from it
+        # are in use, as for Schema.from_raw_data, which resolves lazily.
+        root = unresolved_root(document, pointer)
+        if root is not None:
+            return replace_refs(root, base_uri=base, loader=loader)
+        loaded = replace_refs(document, base_uri=base, loader=loader)
+        for segment in pointer:
+            loaded = loaded[segment]
+        return loaded
 
     def generate(self, scenario: Optional[Scenario] = None) -> Any:
         """
@@ -577,17 +589,11 @@ class JSONSchemaGenerator:
         # branches, but the anyOf level is handled first: it hands the
         # discriminator on in the merged schema.
         other = "anyOf" if kind == "oneOf" else "oneOf"
-        keep_discriminator = "discriminator" in parent and other in parent
-        siblings = {
-            k: v
-            for k, v in parent.items()
-            if k != kind
-            and (
-                k not in _VARIANT_ANNOTATIONS
-                or (k == "discriminator" and keep_discriminator)
-            )
-            and not k.startswith("x-")
-        }
+        siblings = variant_siblings(
+            parent,
+            kind,
+            keep_discriminator="discriminator" in parent and other in parent,
+        )
         named = isinstance(parent.get("discriminator"), dict)
         own = None
         if named or (kind == "oneOf" and not siblings):
@@ -1147,7 +1153,7 @@ class JSONSchemaGenerator:
     def _unique_domain(items: Any) -> Optional[List[Any]]:
         """The distinct values an item schema with a closed domain
         (``const``, ``enum`` or boolean) can take, else ``None``."""
-        node = items.__subject__ if isinstance(items, JsonRef) else items
+        node = unwrap_ref(items)
         if not isinstance(node, dict):
             return None
         if "const" in node:
@@ -1166,7 +1172,7 @@ class JSONSchemaGenerator:
         """Number of integers a bounded integer item schema allows, or
         ``None`` when the schema is not an integer with both bounds (or
         has ``multipleOf``)."""
-        node = items.__subject__ if isinstance(items, JsonRef) else items
+        node = unwrap_ref(items)
         if (
             not isinstance(node, dict)
             or node.get("type") != "integer"

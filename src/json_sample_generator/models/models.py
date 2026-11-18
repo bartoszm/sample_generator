@@ -5,7 +5,7 @@ import warnings
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union, cast
 
 from jsonref import jsonloader, replace_refs
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from ..helpers.discriminator import tag_schema_names
 
@@ -106,6 +106,14 @@ class Scenario(BaseModel):
 class Schema(BaseModel):
     data: Dict[Any, Any]
     base_uri: Optional[str] = None
+    # Set by from_oas and from_raw_data: the document the schema was
+    # loaded from, with its $refs unresolved, and the path to the schema in
+    # it. A recursive schema is resolved up front into a structure that
+    # contains itself; JSONSchemaGenerator generates from this source
+    # instead, as from any schema written with $ref.
+    _source: Optional[Tuple[Dict[Any, Any], Tuple[str, ...]]] = PrivateAttr(
+        default=None
+    )
 
     @staticmethod
     def from_raw_data(raw: Dict[str, Any], base_uri: str) -> Schema:
@@ -153,7 +161,12 @@ class Schema(BaseModel):
                     )
             data = current_data
 
-        return Schema(data=data, base_uri=base_uri)
+        schema = Schema(data=data, base_uri=base_uri)
+        schema._source = (
+            raw,
+            tuple(p for p in base_uri.partition("#")[2].split("/") if p),
+        )
+        return schema
 
     @staticmethod
     def from_oas(
@@ -199,10 +212,12 @@ class Schema(BaseModel):
                 f"Schema '{name}' not found in components/schemas "
                 "of the OAS document."
             )
-        return Schema(
+        schema = Schema(
             data=dict(schema_data),
             base_uri=f"{base_uri}#/components/schemas/{name}",
         )
+        schema._source = (oas_dict, ("components", "schemas", name))
+        return schema
 
 
 class Context(BaseModel):

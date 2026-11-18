@@ -6,7 +6,53 @@ The format is based on Keep a Changelog.
 
 ## [Unreleased]
 
+### Added
+
+- `ValidationFailure.unchecked_format` and `ValidationFailure.checked`: a
+  `format_violation` of a format the validator cannot check (`url`, which
+  JSON Schema does not define, or any other format it does not know, such
+  as one whose checker package is missing) is reported as unchecked
+  instead of as a break that had no effect (issue #18).
+
 ### Fixed
+
+- `validate_breaks` sees a `format_violation` at `date-time`, `uri` and
+  `hostname`: jsonschema checks those only with `rfc3339-validator`,
+  `rfc3986-validator` and `fqdn` installed, which are now dependencies
+  (`rfc3339-validator` moves from the dev group). It checks `time` as
+  draft 2020-12 does: `jsonschema.FormatChecker()`, used before, checks
+  it the draft 3 way and rejected a valid RFC 3339 time such as
+  `12:00:00Z`, so a rule near one could match an error that was not its
+  own. Formats registered with `FormatChecker` are still checked (issue
+  #18).
+
+- `JSONSchemaGenerator` generates from a recursive schema loaded by
+  `Schema.from_oas` or `Schema.from_raw_data`, where it raised
+  `RecursionError`. Both loaders resolve every `$ref` up front, so a
+  recursive one arrives as a structure that contains itself. Both loaders
+  now keep the document with its `$ref`s unresolved (a private attribute of
+  `Schema`), and the generator resolves a schema that contains itself from
+  that document, as it resolves any schema written with `$ref`. A component
+  from `Schema.from_oas` generates the same samples as the unresolved
+  document with that component as its root, and a schema from
+  `Schema.from_raw_data` the same as the schema it was loaded from. A
+  `Schema` built by hand that contains itself raises a `ValueError` that
+  names the loaders, instead of a `RecursionError`. The loaders keep the
+  document, not a copy: it must not be changed while the schemas are in
+  use.
+  Any other schema is resolved as before (issue #16).
+
+- `SampleBreaker` resolves a property inside a `oneOf`/`anyOf` branch
+  that is itself an `allOf`, the way strict OpenAPI variants write a
+  polymorphic reference; it found no schema there, so a `wrong_type`
+  break replaced a string with another string. At every level of the
+  path it now merges `allOf`, picks the branch whose types, `const` and
+  `enum` values (and, for an array, `items`) agree with the sample, and
+  merges it with the keywords next to the `oneOf` as the generator does;
+  the kinds that read the schema read that fragment. A `wrong_type` value
+  is of a type that no branch, `type` list or `nullable` accepts (an
+  integer counts as a `number`); a schema that does not restrict the type
+  gets a string, as before (issue #17).
 
 - With an OpenAPI `discriminator` next to `oneOf`/`anyOf`, the property it
   names gets the value that names the generated branch: its key in

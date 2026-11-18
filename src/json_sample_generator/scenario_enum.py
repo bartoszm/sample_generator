@@ -32,6 +32,7 @@ from .helpers.utils import (
     allof_ref_markers,
     join_path,
     schema_marker,
+    unwrap_ref,
 )
 from .models import Scenario, Schema
 
@@ -159,22 +160,13 @@ def minimal_scenarios(
 # ---------------------------------------------------------------------------
 
 
-def _unwrap(node: Any) -> Any:
-    if isinstance(node, JsonRef):
-        try:
-            return node.__subject__
-        except Exception:
-            return node
-    return node
-
-
 def _variant_label(node: Any, variant: Any, index: int) -> str:
     """The name the generator gives the branch: its discriminator value,
     else its ``title``, else ``variant_<index>``."""
     named = discriminator_name(node, variant)
     if named is not None:
         return named[1]
-    variant = _unwrap(variant)
+    variant = unwrap_ref(variant)
     if isinstance(variant, dict):
         title = variant.get("title")
         if isinstance(title, str) and title:
@@ -198,7 +190,7 @@ def _walk(
     # its required members only; a node that recurs again is cut.
     via_ref = isinstance(node, JsonRef)
     markers = [schema_marker(node)] if via_ref else []
-    node = _unwrap(node)
+    node = unwrap_ref(node)
     if not isinstance(node, dict):
         return
     markers.append(schema_marker(node))

@@ -12,19 +12,18 @@ original is never modified.
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, List, Optional
-
-from jsonref import JsonRef
+from typing import Any, Dict, Optional, Tuple
 
 from .DefaultValueGenerator import DefaultValueGenerator
-from .helpers.allof_handler import allof_merge
 from .helpers.utils import (
     delete_value_at_path,
     get_value_at_path,
     parse_path,
     set_value_at_path,
     to_type,
+    unwrap_ref,
 )
+from .helpers.variants import VariantResolver, accepted_types
 from .models.break_models import BreakKind, BreakRule, BreakScenario
 from .models.models import Schema
 
@@ -39,6 +38,13 @@ _WRONG_TYPE_CANDIDATES = [
     "object",
     "null",
 ]
+
+# No sample value at the path (as opposed to a JSON null).
+_NO_VALUE = object()
+
+# The value written for a wrong type that the value generator has no
+# default for.
+_WRONG_TYPE_VALUES: Dict[str, Any] = {"array": [], "object": {}, "null": None}
 
 _FORMAT_INVALID: Dict[str, str] = {
     "email": "not-an-email",
@@ -77,6 +83,7 @@ class SampleBreaker:
 
     def __init__(self, schema: Schema) -> None:
         self._schema = schema
+        self._variants = VariantResolver()
 
     def apply(self, sample: dict, scenario: BreakScenario) -> dict:
         """Return a deep copy of *sample* with all *scenario* rules applied."""
@@ -104,8 +111,10 @@ class SampleBreaker:
             if existing is None and not _path_exists(data, rule.path):
                 return
 
-        frag = self._resolve_schema(data, rule.path)
-        kind = rule.kind
+        node, value = self._locate(data, rule.path)
+        frag = self._variants.resolve(node, value)
+        if not isinstance(frag, dict):
+            frag = {}
 
         if kind == BreakKind.REMOVE_REQUIRED:
             delete_value_at_path(rule.path, data)
@@ -114,7 +123,7 @@ class SampleBreaker:
             set_value_at_path(rule.path, data, None)
 
         elif kind == BreakKind.WRONG_TYPE:
-            invalid = self._wrong_type_value(frag)
+            invalid = self._wrong_type_value(node, frag)
             set_value_at_path(rule.path, data, invalid)
 
         elif kind == BreakKind.ENUM_VIOLATION:
@@ -183,66 +192,74 @@ class SampleBreaker:
     # ------------------------------------------------------------------
 
     def _resolve_schema(self, data: dict, path: str) -> dict:
-        """Walk *path* in both *data* and the schema, returning the schema fragment."""
-        node = _unwrap_node(self._schema.data)
-        if not path:
-            return node if isinstance(node, dict) else {}
+        """Walk *path* in both *data* and the schema, returning the schema
+        fragment, with ``allOf`` merged and the ``oneOf``/``anyOf`` branch
+        the sample took chosen at every level (see
+        :meth:`.VariantResolver.resolve`)."""
+        node, value = self._locate(data, path)
+        frag = self._variants.resolve(node, value)
+        return frag if isinstance(frag, dict) else {}
 
-        current_data: Any = data
-
-        for segment in parse_path(path):
-            node = _unwrap_node(node)
+    def _locate(self, data: Any, path: str) -> Tuple[Any, Any]:
+        """The schema node at *path*, its own composition not resolved
+        yet, and the sample value there. When the path leaves the sample,
+        the node and value of the last level present."""
+        node: Any = self._schema.data
+        current: Any = data
+        for segment in parse_path(path) if path else []:
+            node = self._variants.resolve(node, current)
             if not isinstance(node, dict):
-                return {}
-
-            # Flatten allOf.
-            if "allOf" in node:
-                try:
-                    node = allof_merge(node)
-                except Exception:
-                    pass
-
-            # Resolve oneOf/anyOf by matching sample shape.
-            for composite in ("oneOf", "anyOf"):
-                variants = node.get(composite)
-                if isinstance(variants, list):
-                    node = _pick_variant(variants, current_data) or node
-                    break
-
-            # Traverse into properties or items.
+                return {}, _NO_VALUE
             if (
                 isinstance(segment, str)
-                and isinstance(current_data, dict)
-                and segment in current_data
+                and isinstance(current, dict)
+                and segment in current
             ):
-                props = node.get("properties", {})
-                node = _unwrap_node(props.get(segment, {}))
-                current_data = current_data[segment]
+                props = node.get("properties")
+                node = (
+                    props.get(segment, {}) if isinstance(props, dict) else {}
+                )
+                current = current[segment]
             elif (
                 isinstance(segment, int)
-                and isinstance(current_data, list)
-                and 0 <= segment < len(current_data)
+                and isinstance(current, list)
+                and 0 <= segment < len(current)
             ):
-                node = _unwrap_node(node.get("items", {}))
-                current_data = current_data[segment]
+                node = node.get("items", {})
+                current = current[segment]
             else:
                 # Path not found in data — return schema node as-is.
                 break
-
-        return node if isinstance(node, dict) else {}
+        return unwrap_ref(node), current
 
     # ------------------------------------------------------------------
     # Value generators
     # ------------------------------------------------------------------
 
-    def _wrong_type_value(self, frag: dict) -> Any:
-        current_type = to_type(frag)
-        for candidate in _WRONG_TYPE_CANDIDATES:
-            if candidate != current_type:
-                try:
-                    return _dvg({"type": candidate})()
-                except Exception:
-                    continue
+    def _wrong_type_value(self, node: Any, frag: dict) -> Any:
+        """A value of a type the schema *node* does not accept: every
+        ``oneOf`` and ``anyOf`` branch counts, and ``integer`` is a
+        ``number``. A schema that does not restrict the type has no wrong
+        type; it gets what it always got, a value of a type other than
+        ``to_type`` of the resolved fragment *frag* (a string for an
+        untyped ``pattern``, which a string can still break)."""
+        accepted = accepted_types(node)
+        if accepted:
+            if "number" in accepted:
+                accepted.add("integer")
+            candidates = [
+                c for c in _WRONG_TYPE_CANDIDATES if c not in accepted
+            ]
+        else:
+            current = to_type(frag)
+            candidates = [c for c in _WRONG_TYPE_CANDIDATES if c != current]
+        for candidate in candidates:
+            if candidate in _WRONG_TYPE_VALUES:
+                return copy.deepcopy(_WRONG_TYPE_VALUES[candidate])
+            try:
+                return _dvg({"type": candidate})()
+            except Exception:
+                continue
         return "WRONG_TYPE_FALLBACK"
 
     def _enum_violation(self, frag: dict) -> Any:
@@ -269,15 +286,6 @@ class SampleBreaker:
 # ---------------------------------------------------------------------------
 
 
-def _unwrap_node(node: Any) -> Any:
-    if isinstance(node, JsonRef):
-        try:
-            return node.__subject__
-        except Exception:
-            pass
-    return node
-
-
 def _get_numeric_bound(frag: dict, direction: str) -> Optional[float]:
     """Return the inclusive bound for *direction* (``"min"`` or ``"max"``)."""
     if direction == "min":
@@ -291,27 +299,6 @@ def _get_numeric_bound(frag: dict, direction: str) -> Optional[float]:
         if "maximum" in frag:
             return float(frag["maximum"])
     return None
-
-
-def _pick_variant(variants: List[Any], sample_node: Any) -> Optional[dict]:
-    """Pick the oneOf/anyOf variant whose required keys match *sample_node*."""
-    if not isinstance(sample_node, dict):
-        return None
-    best: Optional[dict] = None
-    best_score = -1
-    for v in variants:
-        v = _unwrap_node(v)
-        if not isinstance(v, dict):
-            continue
-        required: List[str] = v.get("required") or []
-        props = v.get("properties") or {}
-        score = sum(1 for k in required if k in sample_node)
-        prop_score = sum(1 for k in props if k in sample_node)
-        total = score * 10 + prop_score
-        if total > best_score:
-            best_score = total
-            best = v
-    return best
 
 
 def _resolve_dict_at(data: dict, path: str) -> Any:

@@ -14,11 +14,12 @@ implicit mapping). Two things identify the schema a branch stands for:
 
 from __future__ import annotations
 
-import copy
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urljoin
 
 from jsonref import JsonRef
+
+from .variants import VARIANT_ANNOTATIONS
 
 # A vendor extension, so the generators leave it out of merged schemas.
 SCHEMA_NAME_KEY = "x-schema-name"
@@ -42,22 +43,31 @@ def schema_name(ref: Any) -> Optional[str]:
 def tag_schema_names(document: Any) -> Any:
     """A copy of *document* in which every named schema (``components/
     schemas``, ``definitions``, ``$defs`` at the top level) carries its
-    name as :data:`SCHEMA_NAME_KEY`. An existing annotation is kept."""
+    name as :data:`SCHEMA_NAME_KEY`. An existing annotation is kept. Only
+    the containers on the way to those schemas and the schemas themselves
+    are copied; everything below them is shared with *document*."""
     if not isinstance(document, dict):
         return document
-    tagged = copy.deepcopy(document)
+    tagged = dict(document)
     components = tagged.get("components")
-    holders = [
-        components.get("schemas") if isinstance(components, dict) else None,
-        tagged.get("definitions"),
-        tagged.get("$defs"),
-    ]
-    for holder in holders:
-        if not isinstance(holder, dict):
+    if isinstance(components, dict):
+        tagged["components"] = components = dict(components)
+    for holder, key in (
+        (components, "schemas"),
+        (tagged, "definitions"),
+        (tagged, "$defs"),
+    ):
+        schemas = holder.get(key) if isinstance(holder, dict) else None
+        if not isinstance(schemas, dict):
             continue
-        for name, schema in holder.items():
-            if isinstance(schema, dict):
-                schema.setdefault(SCHEMA_NAME_KEY, name)
+        holder[key] = {
+            name: (
+                {SCHEMA_NAME_KEY: name, **schema}
+                if isinstance(schema, dict)
+                else schema
+            )
+            for name, schema in schemas.items()
+        }
     return tagged
 
 
@@ -66,18 +76,20 @@ def _is_bare_name(target: str) -> bool:
 
 
 # Keys a wrapper around a single ``$ref`` may carry without becoming a
-# schema of its own (OpenAPI 3.0 puts a ``description`` next to a ``$ref``
-# by wrapping it in an ``allOf``).
-_WRAPPER_KEYS = frozenset(
-    {"allOf", "description", "title", "example", "examples", "deprecated"}
-)
+# schema of its own (OpenAPI 3.0 puts a ``description`` or ``nullable``
+# next to a ``$ref`` by wrapping it in an ``allOf``).
+_WRAPPER_KEYS = (VARIANT_ANNOTATIONS - {"discriminator"}) | {"allOf"}
 
 
 def _unwrap(branch: Any) -> Any:
     """The schema *branch* stands for when it is nothing but
     ``allOf: [<one schema>]`` with annotations, else *branch* itself. A
-    resolved :class:`JsonRef` is never unwrapped: it is its own reference."""
+    resolved :class:`JsonRef` is never unwrapped: it is its own reference,
+    nor is a schema that carries a name of its own (:data:`SCHEMA_NAME_KEY`):
+    a named wrapper is named after itself, not after what it wraps."""
     while isinstance(branch, dict) and not isinstance(branch, JsonRef):
+        if _tag(branch) is not None:
+            break
         parts = branch.get("allOf")
         if not (isinstance(parts, list) and len(parts) == 1):
             break

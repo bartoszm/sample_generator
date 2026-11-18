@@ -76,8 +76,22 @@ The format is based on Keep a Changelog.
   it raised "no candidate matched" unless the schema had a `title`
   (issue #15).
 - A `oneOf`/`anyOf` branch that only wraps a reference, `allOf: [{$ref}]`
-  with at most annotations such as `description`, is named and selected
-  like the reference (issue #15).
+  with at most annotations such as `description` or `nullable`, is named
+  and selected like the reference, unless it is a named schema itself, in
+  which case it is named after itself (issue #15).
+
+### Changed
+
+- `collect_variant_sites` labels a branch with the name a discriminator
+  gives it before its `title` (it was the `title` first), so the labels
+  are the values the generator writes.
+- `Schema.from_raw_data` resolves references against the document it is
+  given, with the fragment of the base URI removed, instead of reading the
+  file the URI names; a base URI with a fragment that points at a file
+  that does not exist no longer raises `JsonRefError`.
+- With `uniqueItems`, the discriminator values of the items, nested
+  discriminated `oneOf`s included, are drawn freely once half of the
+  redraws are spent.
 
 ## [0.6.0] - 2026-10-21
 

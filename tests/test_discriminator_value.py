@@ -13,7 +13,7 @@ from faker import Faker
 from jsonschema import Draft202012Validator
 
 from json_sample_generator import JSONSchemaGenerator
-from json_sample_generator.JSONSchemaGenerator import _schema_name
+from json_sample_generator.helpers.discriminator import schema_name
 from json_sample_generator.models import Scenario, Schema
 
 DOG = {
@@ -448,4 +448,4 @@ def test_str_selector_with_an_unknown_name_still_raises():
     ],
 )
 def test_schema_name(ref, name):
-    assert _schema_name(ref) == name
+    assert schema_name(ref) == name

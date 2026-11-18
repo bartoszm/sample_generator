@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 from faker import Faker
 from jsonref import JsonRef, jsonloader, replace_refs
-from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema import Draft202012Validator
 from proxytypes import LazyProxy
 
 from .DefaultValueGenerator import DefaultValueGenerator
@@ -17,13 +17,13 @@ from .helpers import allof_merge, to_type
 from .helpers.discriminator import (
     discriminator_name,
     refers_to,
-    schema_name,
 )
 from .helpers.utils import (
     DEFAULT_MAX_DEPTH,
     MAX_REENTRIES,
     allof_ref_markers,
     contains_itself,
+    format_checker,
     join_path,
     parse_path,
     path_startswith,
@@ -31,7 +31,7 @@ from .helpers.utils import (
     unresolved_root,
     unwrap_ref,
 )
-from .helpers.variants import variant_siblings
+from .helpers.variants import VARIANT_ANNOTATIONS, variant_siblings
 from .models import Context, Scenario, Schema
 from .SchemaGeneratorBuilder import SchemaGeneratorBuilder
 
@@ -65,45 +65,36 @@ fake = Faker()
 # How deep _pins_property follows branches that are polymorphic in turn.
 _MAX_NAMING_DEPTH = 8
 
-# Keywords of a property schema that do not constrain a string value.
-_ANNOTATION_KEYS = frozenset(
-    {
-        "type",
-        "title",
-        "description",
-        "example",
-        "examples",
-        "default",
-        "deprecated",
-        "readOnly",
-        "writeOnly",
-        "nullable",
-    }
-)
+# Keywords of a string property schema that ``_length_ok`` accounts for.
+_STRING_KEYS = VARIANT_ANNOTATIONS | {"type", "minLength", "maxLength"}
 
 
 def _accepts(schema: Any, value: Any) -> bool:
     """True when *value* validates against the property *schema*,
-    ``format`` included. A plain ``{"type": "string"}`` (the usual
-    discriminator property) takes any string without building a
+    ``format`` included. A string schema that only limits the length (the
+    usual discriminator property) is checked directly, without building a
     validator."""
-    if (
-        isinstance(value, str)
-        and isinstance(schema, dict)
-        and schema.get("type") == "string"
-        and all(k in _ANNOTATION_KEYS or k.startswith("x-") for k in schema)
-    ):
-        return True
+    if isinstance(value, str) and isinstance(schema, dict):
+        if schema.get("type") == "string" and all(
+            k in _STRING_KEYS or k.startswith("x-") for k in schema
+        ):
+            return _length_ok(schema, value)
     try:
         return Draft202012Validator(
-            schema, format_checker=FormatChecker()
+            schema, format_checker=format_checker()
         ).is_valid(value)
     except Exception:
         return False
 
 
-# the PR's tests import the helper under its private name
-_schema_name = schema_name
+def _length_ok(schema: Dict[str, Any], value: str) -> bool:
+    low, high = schema.get("minLength"), schema.get("maxLength")
+    if not all(isinstance(n, int) for n in (low or 0, high or 0)):
+        return False
+    return (low is None or len(value) >= low) and (
+        high is None or len(value) <= high
+    )
+
 
 GeneratorFunctionType = Callable[[Dict[str, Any]], Callable[[], Any]]
 

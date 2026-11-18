@@ -15,6 +15,7 @@ from typing import (
     Union,
 )
 
+import jsonschema
 from jsonref import JsonRef
 
 PathSegment = Union[str, int]
@@ -501,3 +502,16 @@ def to_type(schema: Dict[str, Any]) -> str:
     if "items" in schema:
         return "array"
     return "null"
+
+
+def format_checker() -> jsonschema.FormatChecker:
+    """Draft 2020-12's format checks, with any other format
+    ``jsonschema.FormatChecker()`` knows (one registered with
+    ``FormatChecker.cls_checks``, say) kept. ``FormatChecker()`` alone
+    holds every draft's formats, and its ``time`` is draft 3's, which
+    rejects an RFC 3339 time such as ``19:47:52Z``."""
+    checker = jsonschema.FormatChecker()
+    checker.checkers.update(
+        jsonschema.Draft202012Validator.FORMAT_CHECKER.checkers
+    )
+    return checker

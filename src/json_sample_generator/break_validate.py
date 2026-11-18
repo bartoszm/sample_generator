@@ -22,7 +22,7 @@ import jsonschema
 
 from .break_enum import BreakSite, collect_break_sites
 from .breaker import SampleBreaker
-from .helpers.utils import path_startswith
+from .helpers.utils import format_checker, path_startswith
 from .models.break_models import BreakKind, BreakRule, BreakScenario
 from .models.models import Schema
 
@@ -225,10 +225,10 @@ def validate_breaks(
     Uses ``jsonschema.Draft202012Validator``.  The schema is used as-is
     (the caller is responsible for ref resolution when needed).
     """
-    format_checker = _format_checker()
+    checker = format_checker()
     validator = jsonschema.Draft202012Validator(
         schema.data,
-        format_checker=format_checker,
+        format_checker=checker,
     )
     all_errors: List[jsonschema.ValidationError] = list(
         validator.iter_errors(broken_sample)
@@ -248,7 +248,7 @@ def validate_breaks(
                 )
             except ValueError:
                 fmt = None  # a path parse_path cannot read
-            if isinstance(fmt, str) and fmt not in format_checker.checkers:
+            if isinstance(fmt, str) and fmt not in checker.checkers:
                 unchecked = fmt
         results.append(
             ValidationFailure(
@@ -261,19 +261,6 @@ def validate_breaks(
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
-
-
-def _format_checker() -> jsonschema.FormatChecker:
-    """Draft 2020-12's format checks, with any other format
-    ``jsonschema.FormatChecker()`` knows (one registered with
-    ``FormatChecker.cls_checks``, say) kept. ``FormatChecker()`` alone
-    holds every draft's formats, and its ``time`` is draft 3's, which
-    rejects an RFC 3339 time such as ``19:47:52Z``."""
-    checker = jsonschema.FormatChecker()
-    checker.checkers.update(
-        jsonschema.Draft202012Validator.FORMAT_CHECKER.checkers
-    )
-    return checker
 
 
 def _normalize_to_wildcard(path: str) -> str:

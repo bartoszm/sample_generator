@@ -49,9 +49,10 @@ class VariantSite:
             Array items use ``[*]`` as the index placeholder.
         kind: ``"oneOf"`` or ``"anyOf"``.
         count: Number of variants at this site.
-        names: Best-effort human labels for each variant — the variant's
-            ``title``, else a discriminator-mapping key, else
-            ``f"variant_{i}"``.
+        names: Best-effort human labels for each variant — the name a
+            discriminator gives it (its mapping key, or the name of the
+            schema it stands for; what the generator writes), else the
+            variant's ``title``, else ``f"variant_{i}"``.
     """
 
     path: str

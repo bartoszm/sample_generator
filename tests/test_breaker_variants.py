@@ -463,7 +463,7 @@ def test_branches_alike_but_for_their_const_are_told_apart():
 # ---------------------------------------------------------------------------
 
 
-def testaccepted_types():
+def test_accepted_types():
     assert accepted_types({"type": "string", "nullable": True}) == {
         "string",
         "null",
@@ -475,7 +475,7 @@ def testaccepted_types():
     assert accepted_types({"description": "anything"}) is None
 
 
-def testaccepted_types_of_a_composition_that_contains_itself():
+def test_accepted_types_of_a_composition_that_contains_itself():
     # three allOf parts that lead back to the node, level after level
     node = {"allOf": []}
     node["allOf"].extend([node, {"allOf": [node]}, {"type": "string"}])

@@ -12,10 +12,9 @@ original is never modified.
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from .DefaultValueGenerator import DefaultValueGenerator
-from .helpers.allof_handler import allof_merge
 from .helpers.utils import (
     delete_value_at_path,
     get_value_at_path,
@@ -24,6 +23,7 @@ from .helpers.utils import (
     to_type,
     unwrap_ref,
 )
+from .helpers.variants import VariantResolver, accepted_types
 from .models.break_models import BreakKind, BreakRule, BreakScenario
 from .models.models import Schema
 
@@ -39,15 +39,8 @@ _WRONG_TYPE_CANDIDATES = [
     "null",
 ]
 
-# Steps _resolve_fragment takes at one node before it gives up: each merges
-# an allOf or takes a oneOf/anyOf branch.
-_MAX_RESOLVE_STEPS = 32
-
 # No sample value at the path (as opposed to a JSON null).
 _NO_VALUE = object()
-
-# Elements of an array sample compared with a candidate branch's items.
-_ITEMS_COMPARED = 8
 
 # The value written for a wrong type that the value generator has no
 # default for.
@@ -90,6 +83,7 @@ class SampleBreaker:
 
     def __init__(self, schema: Schema) -> None:
         self._schema = schema
+        self._variants = VariantResolver()
 
     def apply(self, sample: dict, scenario: BreakScenario) -> dict:
         """Return a deep copy of *sample* with all *scenario* rules applied."""
@@ -118,7 +112,7 @@ class SampleBreaker:
                 return
 
         node, value = self._locate(data, rule.path)
-        frag = _resolve_fragment(node, value)
+        frag = self._variants.resolve(node, value)
         if not isinstance(frag, dict):
             frag = {}
 
@@ -201,9 +195,9 @@ class SampleBreaker:
         """Walk *path* in both *data* and the schema, returning the schema
         fragment, with ``allOf`` merged and the ``oneOf``/``anyOf`` branch
         the sample took chosen at every level (see
-        :func:`_resolve_fragment`)."""
+        :meth:`.VariantResolver.resolve`)."""
         node, value = self._locate(data, path)
-        frag = _resolve_fragment(node, value)
+        frag = self._variants.resolve(node, value)
         return frag if isinstance(frag, dict) else {}
 
     def _locate(self, data: Any, path: str) -> Tuple[Any, Any]:
@@ -213,7 +207,7 @@ class SampleBreaker:
         node: Any = self._schema.data
         current: Any = data
         for segment in parse_path(path) if path else []:
-            node = _resolve_fragment(node, current)
+            node = self._variants.resolve(node, current)
             if not isinstance(node, dict):
                 return {}, _NO_VALUE
             if (
@@ -249,7 +243,7 @@ class SampleBreaker:
         type; it gets what it always got, a value of a type other than
         ``to_type`` of the resolved fragment *frag* (a string for an
         untyped ``pattern``, which a string can still break)."""
-        accepted = _accepted_types(node)
+        accepted = accepted_types(node)
         if accepted:
             if "number" in accepted:
                 accepted.add("integer")
@@ -305,206 +299,6 @@ def _get_numeric_bound(frag: dict, direction: str) -> Optional[float]:
         if "maximum" in frag:
             return float(frag["maximum"])
     return None
-
-
-def _merge(parts: List[Any]) -> Optional[dict]:
-    """``allOf`` of *parts*, merged; ``None`` when the merge fails."""
-    try:
-        merged = allof_merge({"allOf": parts})
-    except Exception:
-        return None
-    return merged if isinstance(merged, dict) else None
-
-
-def _resolve_fragment(node: Any, sample: Any) -> Any:
-    """*node* as *sample* sees it: ``allOf`` merged, and the ``oneOf`` or
-    ``anyOf`` branch the sample took chosen and merged with the node's own
-    keywords, the way the generator merges them, until neither is left."""
-    for _ in range(_MAX_RESOLVE_STEPS):
-        node = unwrap_ref(node)
-        if not isinstance(node, dict):
-            return node
-        if "allOf" in node:
-            merged = _merge([node])
-            if merged is not None and "allOf" not in merged:
-                node = merged
-                continue
-        for composite in ("oneOf", "anyOf"):
-            variants = node.get(composite)
-            if isinstance(variants, list) and variants:
-                break
-        else:
-            return node
-        branch = _pick_variant(variants, sample)
-        if branch is None:
-            return node
-        siblings = {k: v for k, v in node.items() if k != composite}
-        node = (_merge([siblings, branch]) or branch) if siblings else branch
-    return node
-
-
-def _json_type(value: Any) -> str:
-    """The JSON Schema type of *value*; an integral float is an
-    ``integer``."""
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "boolean"
-    if isinstance(value, int):
-        return "integer"
-    if isinstance(value, float):
-        return "integer" if value.is_integer() else "number"
-    if isinstance(value, str):
-        return "string"
-    if isinstance(value, list):
-        return "array"
-    if isinstance(value, dict):
-        return "object"
-    return "string"
-
-
-def _same_value(a: Any, b: Any) -> bool:
-    """*a* and *b* are the same JSON value (``1`` and ``true`` differ)."""
-    return _json_type(a) == _json_type(b) and a == b
-
-
-def _accepted_types(node: Any) -> Optional[Set[str]]:
-    """The JSON types *node* accepts, ``number`` standing for ``integer``
-    too; ``None`` when it does not restrict them. ``type``, OpenAPI's
-    ``nullable``, ``const``, ``enum``, ``allOf`` and every ``oneOf`` and
-    ``anyOf`` branch count; a composition that leads back to a node being
-    read counts as unrestricted."""
-    known: Dict[int, Optional[Set[str]]] = {}
-    reading: Set[int] = set()
-
-    def read(node: Any) -> Optional[Set[str]]:
-        node = unwrap_ref(node)
-        if not isinstance(node, dict) or id(node) in reading:
-            return None
-        if id(node) in known:
-            return known[id(node)]
-        reading.add(id(node))
-        try:
-            accepted = _read_types(node, read)
-        finally:
-            reading.discard(id(node))
-        known[id(node)] = accepted
-        return accepted
-
-    accepted = read(node)
-    return None if accepted is None else set(accepted)
-
-
-def _read_types(node: dict, read: Any) -> Optional[Set[str]]:
-    """:func:`_accepted_types` of one node, *read* giving its parts'."""
-    accepted: Optional[Set[str]] = None
-
-    def narrow(types: Optional[Set[str]]) -> None:
-        nonlocal accepted
-        if types is None:
-            return
-        types = set(types)
-        if "number" in types:
-            types.add("integer")
-        accepted = types if accepted is None else accepted & types
-
-    declared = node.get("type")
-    if isinstance(declared, str):
-        narrow({declared})
-    elif isinstance(declared, list):
-        narrow({t for t in declared if isinstance(t, str)})
-    if node.get("nullable") is True and accepted is not None:
-        accepted.add("null")
-    if "const" in node:
-        narrow({_json_type(node["const"])})
-    if isinstance(node.get("enum"), list):
-        narrow({_json_type(v) for v in node["enum"]})
-    for part in node.get("allOf") or []:
-        narrow(read(part))
-    for composite in ("oneOf", "anyOf"):
-        branches = node.get(composite)
-        if not isinstance(branches, list) or not branches:
-            continue
-        union: Optional[Set[str]] = set()
-        for branch in branches:
-            types = read(branch)
-            if types is None:
-                union = None
-                break
-            union |= types
-        narrow(union)
-    return accepted
-
-
-def _pick_variant(variants: List[Any], sample_node: Any) -> Optional[dict]:
-    """Pick the oneOf/anyOf variant *sample_node* took, each variant seen
-    with its ``allOf`` merged (see :func:`_fit`). ``None`` for a value
-    that is not an object when no variant accepts it."""
-    best: Optional[dict] = None
-    best_score: Optional[int] = None
-    for v in variants:
-        v = unwrap_ref(v)
-        if not isinstance(v, dict):
-            continue
-        score = _fit(_merge([v]) or v, sample_node)
-        if best_score is None or score > best_score:
-            best_score = score
-            best = v
-    if not isinstance(sample_node, dict) and (best_score or 0) < 0:
-        return None
-    return best
-
-
-def _fit(flat: dict, sample: Any, depth: int = 0) -> int:
-    """How well *sample* fits the variant *flat*: far below zero when the
-    variant rules out its type, or a value its ``const`` or ``enum`` does
-    not hold; then, for an object, the variant's required keys and
-    properties it has (as before); for an array, how its first elements
-    fit the variant's ``items``."""
-    accepted = _accepted_types(flat)
-    score = 0 if accepted is None or _json_type(sample) in accepted else -1000
-    if isinstance(sample, dict):
-        required: List[str] = flat.get("required") or []
-        props = flat.get("properties") or {}
-        score += 10 * sum(1 for k in required if k in sample)
-        score += sum(1 for k in props if k in sample)
-        for key, prop in props.items():
-            if key in sample:
-                score += _agreement(prop, sample[key])
-    elif isinstance(sample, list):
-        items = unwrap_ref(flat.get("items"))
-        if isinstance(items, dict):
-            items = _merge([items]) or items
-            for element in sample[:_ITEMS_COMPARED]:
-                score += (
-                    _fit(items, element, depth + 1)
-                    if depth < 2
-                    else _agreement(items, element)
-                )
-    else:
-        score += _agreement(flat, sample)
-    return score
-
-
-def _agreement(schema: Any, value: Any) -> int:
-    """Strongly negative when *schema*, its ``allOf`` merged, rules
-    *value* out by its type, ``const`` or ``enum``; positive when its
-    ``const`` or ``enum`` holds *value*; else zero."""
-    schema = unwrap_ref(schema)
-    if not isinstance(schema, dict):
-        return 0
-    accepted = _accepted_types(schema)
-    if accepted is not None and _json_type(value) not in accepted:
-        return -1000
-    flat = (_merge([schema]) or schema) if "allOf" in schema else schema
-    if "const" in flat:
-        return 100 if _same_value(flat["const"], value) else -1000
-    enum = flat.get("enum")
-    if isinstance(enum, list):
-        if any(_same_value(option, value) for option in enum):
-            return 50
-        return -1000
-    return 0
 
 
 def _resolve_dict_at(data: dict, path: str) -> Any:

@@ -5,6 +5,7 @@ Each test pins one review finding; see the test names for the behaviour.
 
 from __future__ import annotations
 
+import copy
 import json
 import random
 
@@ -14,6 +15,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 from json_sample_generator import JSONSchemaGenerator
 from json_sample_generator.models import Scenario, Schema
+from json_sample_generator.scenario_enum import collect_variant_sites
 
 DOG = {
     "type": "object",
@@ -273,3 +275,76 @@ def test_unique_items_of_discriminated_branches_still_generate():
         assert len({json.dumps(i, sort_keys=True) for i in items}) == len(
             items
         )
+
+
+# -- loaders -------------------------------------------------------------------
+
+
+def _oas_doc():
+    return {
+        "openapi": "3.0.0",
+        "info": {"title": "t", "version": "1"},
+        "paths": {},
+        "components": {
+            "schemas": {
+                "Dog": copy.deepcopy(DOG),
+                "Cat": copy.deepcopy(CAT),
+                "Pet": {
+                    "type": "object",
+                    "required": ["name", "petType"],
+                    "properties": {
+                        "petType": {"type": "string"},
+                        "name": {"type": "string"},
+                    },
+                    "discriminator": {
+                        "propertyName": "petType",
+                        "mapping": {
+                            "dog": "#/components/schemas/Dog",
+                            "cat": "#/components/schemas/Cat",
+                        },
+                    },
+                    "oneOf": [
+                        {"$ref": "#/components/schemas/Dog"},
+                        {"$ref": "#/components/schemas/Cat"},
+                    ],
+                },
+            }
+        },
+    }
+
+
+@pytest.fixture
+def oas_file(tmp_path):
+    path = tmp_path / "oas.json"
+    path.write_text(json.dumps(_oas_doc()))
+    return path
+
+
+@pytest.mark.parametrize("loader", ["from_oas", "from_raw_data"])
+def test_loaders_keep_the_branch_names(loader, oas_file):
+    uri = oas_file.as_uri()
+    if loader == "from_oas":
+        schema = Schema.from_oas(_oas_doc(), "Pet", base_uri=uri)
+    else:
+        schema = Schema.from_raw_data(
+            json.loads(oas_file.read_text()), uri + "#/components/schemas/Pet"
+        )
+    gen = JSONSchemaGenerator(schema)
+    for seed in range(20):
+        random.seed(seed)
+        Faker.seed(seed)
+        out = gen.generate()
+        assert out["petType"] == ("dog" if "bark" in out else "cat"), out
+    random.seed(0)
+    out = gen.generate(_scenario(oneof_selectors={"": "cat"}))
+    assert out["petType"] == "cat" and "meow" in out
+
+
+# -- enumerator labels -----------------------------------------------------------
+
+
+def test_variant_sites_are_labelled_with_the_names_the_generator_writes():
+    sites = collect_variant_sites(
+        Schema(data=_pet(), base_uri="file://pets.json")
+    )
+    assert [s.names for s in sites] == [("dog", "cat")]

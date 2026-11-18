@@ -7,6 +7,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union, cast
 from jsonref import jsonloader, replace_refs
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..helpers.discriminator import tag_schema_names
+
 # Define a type for scenario override functions
 ScenarioOverrideFn = Callable[["Context"], Any]
 
@@ -121,9 +123,18 @@ class Schema(BaseModel):
                 stacklevel=2,
             )
 
+        # Named schemas carry their name, so a oneOf branch can still be
+        # named by a discriminator once the generator's deep copy has
+        # turned the references into plain dicts.
+        # The references resolve against the document itself (its URI
+        # without the fragment), not against a copy read from disk.
         data = cast(
             Dict[Any, Any],
-            replace_refs(raw, base_uri=base_uri, loader=jsonloader),
+            replace_refs(
+                tag_schema_names(raw),
+                base_uri=base_uri.split("#", 1)[0],
+                loader=jsonloader,
+            ),
         )
 
         if "#" in base_uri:
@@ -173,8 +184,13 @@ class Schema(BaseModel):
             ValueError: If the named schema is not found in
                 components/schemas.
         """
+        # No reference survives ``proxies=False``: the name of each
+        # component is kept on the schema itself, for discriminators.
         resolved = replace_refs(
-            oas_dict, base_uri=base_uri, proxies=False, loader=jsonloader
+            tag_schema_names(oas_dict),
+            base_uri=base_uri,
+            proxies=False,
+            loader=jsonloader,
         )
         try:
             schema_data = resolved["components"]["schemas"][name]

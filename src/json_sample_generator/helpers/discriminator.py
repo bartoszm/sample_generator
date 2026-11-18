@@ -65,6 +65,30 @@ def _is_bare_name(target: str) -> bool:
     return "/" not in target and "#" not in target
 
 
+# Keys a wrapper around a single ``$ref`` may carry without becoming a
+# schema of its own (OpenAPI 3.0 puts a ``description`` next to a ``$ref``
+# by wrapping it in an ``allOf``).
+_WRAPPER_KEYS = frozenset(
+    {"allOf", "description", "title", "example", "examples", "deprecated"}
+)
+
+
+def _unwrap(branch: Any) -> Any:
+    """The schema *branch* stands for when it is nothing but
+    ``allOf: [<one schema>]`` with annotations, else *branch* itself. A
+    resolved :class:`JsonRef` is never unwrapped: it is its own reference."""
+    while isinstance(branch, dict) and not isinstance(branch, JsonRef):
+        parts = branch.get("allOf")
+        if not (isinstance(parts, list) and len(parts) == 1):
+            break
+        if not all(k in _WRAPPER_KEYS or k.startswith("x-") for k in branch):
+            break
+        if not isinstance(parts[0], dict):
+            break
+        branch = parts[0]
+    return branch
+
+
 def _tag(branch: Any) -> Optional[str]:
     tag = branch.get(SCHEMA_NAME_KEY) if isinstance(branch, dict) else None
     return tag if isinstance(tag, str) and tag else None
@@ -85,6 +109,7 @@ def _ref(branch: Any) -> Optional[str]:
 
 def branch_schema_name(branch: Any) -> Optional[str]:
     """The name of the named schema *branch* stands for, else ``None``."""
+    branch = _unwrap(branch)
     name = schema_name(_ref(branch))
     return name if name is not None else _tag(branch)
 
@@ -98,6 +123,7 @@ def refers_to(target: Any, branch: Any) -> bool:
     compared with the schema's name."""
     if not isinstance(target, str) or not target:
         return False
+    branch = _unwrap(branch)
     ref = _ref(branch)
     if ref is None:
         tag = _tag(branch)

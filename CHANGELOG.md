@@ -29,6 +29,9 @@ The format is based on Keep a Changelog.
   and with a discriminator also by the name of the schema it stands for;
   it raised "no candidate matched" unless the schema had a `title`
   (issue #15).
+- A `oneOf`/`anyOf` branch that only wraps a reference, `allOf: [{$ref}]`
+  with at most annotations such as `description`, is named and selected
+  like the reference (issue #15).
 
 ## [0.6.0] - 2026-10-21
 

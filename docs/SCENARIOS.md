@@ -204,7 +204,9 @@ property, or every branch pins it; a level that does neither is named by
 this one), when the value would not validate against the property's
 schema (`format` included), and when an override or `default_data` sets
 it. An inline branch is named only through a mapping that refers to its
-`title`. A mapping value is a reference, a file or a bare schema name.
+`title`. A branch that only wraps a reference, `allOf: [{$ref}]` with at
+most annotations such as `description`, is named like the reference. A
+mapping value is a reference, a file or a bare schema name.
 
 `Schema.from_oas` and `Schema.from_raw_data` resolve the `$ref`s before the
 generator sees them, so they put the name of every schema of

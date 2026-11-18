@@ -29,13 +29,17 @@ The format is based on Keep a Changelog.
 - `JSONSchemaGenerator` generates from a recursive schema loaded by
   `Schema.from_oas` or `Schema.from_raw_data`, where it raised
   `RecursionError`. Both loaders resolve every `$ref` up front, so a
-  recursive one arrives as a structure that contains itself; the generator
-  now writes it back as `$ref`s before resolving it, the way the document
-  wrote them: `Schema.from_oas` records which schemas are its components
-  (a private attribute of `Schema`), and `Schema.from_raw_data` keeps its
-  references. A component from `Schema.from_oas` generates the same samples
-  as the unresolved document with that component as its root, and a schema
-  from `Schema.from_raw_data` the same as the schema it was loaded from.
+  recursive one arrives as a structure that contains itself. Both loaders
+  now keep the document with its `$ref`s unresolved (a private attribute of
+  `Schema`), and the generator resolves a schema that contains itself from
+  that document, as it resolves any schema written with `$ref`. A component
+  from `Schema.from_oas` generates the same samples as the unresolved
+  document with that component as its root, and a schema from
+  `Schema.from_raw_data` the same as the schema it was loaded from. A
+  `Schema` built by hand that contains itself raises a `ValueError` that
+  names the loaders, instead of a `RecursionError`. The loaders keep the
+  document, not a copy: it must not be changed while the schemas are in
+  use.
   Any other schema is resolved as before (issue #16).
 
 ## [0.6.0] - 2026-10-21

@@ -25,6 +25,7 @@ from .helpers.utils import (
     unresolved_root,
     unwrap_ref,
 )
+from .helpers.variants import variant_siblings
 from .models import Context, Scenario, Schema
 from .SchemaGeneratorBuilder import SchemaGeneratorBuilder
 
@@ -99,33 +100,6 @@ def _json_key(value: Any) -> Any:
             tuple(sorted((str(k), _json_key(v)) for k, v in value.items())),
         )
     return ("other", repr(value))
-
-
-# Keywords next to a oneOf/anyOf that do not constrain the instance and
-# therefore need not be merged into the chosen branch. Vendor extensions
-# (``x-...``) are treated the same way.
-_VARIANT_ANNOTATIONS = frozenset(
-    {
-        "discriminator",
-        "title",
-        "description",
-        "$comment",
-        "examples",
-        "example",
-        "default",
-        "deprecated",
-        "readOnly",
-        "writeOnly",
-        "$schema",
-        "$id",
-        "definitions",
-        "$defs",
-        "components",
-        "xml",
-        "externalDocs",
-        "nullable",
-    }
-)
 
 
 class JSONSchemaGenerator:
@@ -559,13 +533,7 @@ class JSONSchemaGenerator:
         schemas = parent.get(kind, [])
         selected = self._resolve_variant(ctx, schemas, scenario, kind)
 
-        siblings = {
-            k: v
-            for k, v in parent.items()
-            if k != kind
-            and k not in _VARIANT_ANNOTATIONS
-            and not k.startswith("x-")
-        }
+        siblings = variant_siblings(parent, kind)
         if not siblings:
             # Recurse into the branch itself (keeps $ref identity and
             # schema_path), still leaving out what only the other oneOf

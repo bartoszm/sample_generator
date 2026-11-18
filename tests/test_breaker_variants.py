@@ -12,11 +12,13 @@ from faker import Faker
 from jsonschema import Draft202012Validator
 
 from json_sample_generator import validate_breaks
-from json_sample_generator.breaker import (
-    SampleBreaker,
-    _accepted_types,
-    _json_type,
-    _same_value,
+from json_sample_generator.breaker import SampleBreaker
+from json_sample_generator.helpers.variants import (
+    VariantResolver,
+    accepted_types,
+    json_type,
+    same_value,
+    variant_siblings,
 )
 from json_sample_generator.models import Schema
 from json_sample_generator.models.break_models import (
@@ -461,27 +463,64 @@ def test_branches_alike_but_for_their_const_are_told_apart():
 # ---------------------------------------------------------------------------
 
 
-def test_accepted_types():
-    assert _accepted_types({"type": "string", "nullable": True}) == {
+def testaccepted_types():
+    assert accepted_types({"type": "string", "nullable": True}) == {
         "string",
         "null",
     }
-    assert _accepted_types({"type": "number"}) == {"number", "integer"}
-    assert _accepted_types({"type": "string", "enum": ["a", 1]}) == {"string"}
-    assert _accepted_types({"const": None}) == {"null"}
-    assert _accepted_types({"oneOf": [{"type": "string"}, {}]}) is None
-    assert _accepted_types({"description": "anything"}) is None
+    assert accepted_types({"type": "number"}) == {"number", "integer"}
+    assert accepted_types({"type": "string", "enum": ["a", 1]}) == {"string"}
+    assert accepted_types({"const": None}) == {"null"}
+    assert accepted_types({"oneOf": [{"type": "string"}, {}]}) is None
+    assert accepted_types({"description": "anything"}) is None
 
 
-def test_accepted_types_of_a_composition_that_contains_itself():
+def testaccepted_types_of_a_composition_that_contains_itself():
     # three allOf parts that lead back to the node, level after level
     node = {"allOf": []}
     node["allOf"].extend([node, {"allOf": [node]}, {"type": "string"}])
     started = time.perf_counter()
-    assert _accepted_types(node) == {"string"}
+    assert accepted_types(node) == {"string"}
     assert time.perf_counter() - started < 1
 
 
 def test_json_values():
-    assert _json_type(1.0) == "integer" and _json_type(1.5) == "number"
-    assert not _same_value(1, True) and _same_value(1, 1.0)
+    assert json_type(1.0) == "integer" and json_type(1.5) == "number"
+    assert not same_value(1, True) and same_value(1, 1.0)
+
+
+def test_variant_siblings_drop_annotations_and_the_branch_list():
+    parent = {
+        "oneOf": [{"type": "string"}],
+        "anyOf": [{"type": "integer"}],
+        "description": "d",
+        "x-vendor": 1,
+        "properties": {"a": {"type": "string"}},
+        "required": ["a"],
+    }
+
+    assert variant_siblings(parent, "oneOf") == {
+        "anyOf": [{"type": "integer"}],
+        "properties": {"a": {"type": "string"}},
+        "required": ["a"],
+    }
+
+
+def test_resolver_gives_the_same_fragment_when_asked_again():
+    one = {
+        "allOf": [
+            {"type": "object", "properties": {"k": {"const": "a"}}},
+            {"properties": {"x": {"type": "string"}}},
+        ]
+    }
+    two = {"type": "object", "properties": {"k": {"const": "b"}}}
+    node = {"description": "d", "oneOf": [one, two]}
+    resolver = VariantResolver()
+
+    first = resolver.resolve(node, {"k": "a"})
+    again = resolver.resolve(node, {"k": "a"})
+    other = resolver.resolve(node, {"k": "b"})
+
+    assert first is again
+    assert "x" in first["properties"] and "description" not in first
+    assert other is two

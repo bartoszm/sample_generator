@@ -14,8 +14,6 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, List, Optional
 
-from jsonref import JsonRef
-
 from .DefaultValueGenerator import DefaultValueGenerator
 from .helpers.allof_handler import allof_merge
 from .helpers.utils import (
@@ -24,6 +22,7 @@ from .helpers.utils import (
     parse_path,
     set_value_at_path,
     to_type,
+    unwrap_ref,
 )
 from .models.break_models import BreakKind, BreakRule, BreakScenario
 from .models.models import Schema
@@ -184,14 +183,14 @@ class SampleBreaker:
 
     def _resolve_schema(self, data: dict, path: str) -> dict:
         """Walk *path* in both *data* and the schema, returning the schema fragment."""
-        node = _unwrap_node(self._schema.data)
+        node = unwrap_ref(self._schema.data)
         if not path:
             return node if isinstance(node, dict) else {}
 
         current_data: Any = data
 
         for segment in parse_path(path):
-            node = _unwrap_node(node)
+            node = unwrap_ref(node)
             if not isinstance(node, dict):
                 return {}
 
@@ -216,14 +215,14 @@ class SampleBreaker:
                 and segment in current_data
             ):
                 props = node.get("properties", {})
-                node = _unwrap_node(props.get(segment, {}))
+                node = unwrap_ref(props.get(segment, {}))
                 current_data = current_data[segment]
             elif (
                 isinstance(segment, int)
                 and isinstance(current_data, list)
                 and 0 <= segment < len(current_data)
             ):
-                node = _unwrap_node(node.get("items", {}))
+                node = unwrap_ref(node.get("items", {}))
                 current_data = current_data[segment]
             else:
                 # Path not found in data — return schema node as-is.
@@ -269,15 +268,6 @@ class SampleBreaker:
 # ---------------------------------------------------------------------------
 
 
-def _unwrap_node(node: Any) -> Any:
-    if isinstance(node, JsonRef):
-        try:
-            return node.__subject__
-        except Exception:
-            pass
-    return node
-
-
 def _get_numeric_bound(frag: dict, direction: str) -> Optional[float]:
     """Return the inclusive bound for *direction* (``"min"`` or ``"max"``)."""
     if direction == "min":
@@ -300,7 +290,7 @@ def _pick_variant(variants: List[Any], sample_node: Any) -> Optional[dict]:
     best: Optional[dict] = None
     best_score = -1
     for v in variants:
-        v = _unwrap_node(v)
+        v = unwrap_ref(v)
         if not isinstance(v, dict):
             continue
         required: List[str] = v.get("required") or []

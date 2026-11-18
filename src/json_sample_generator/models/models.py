@@ -104,10 +104,14 @@ class Scenario(BaseModel):
 class Schema(BaseModel):
     data: Dict[Any, Any]
     base_uri: Optional[str] = None
-    # Set by from_oas: each resolved component schema in data, with its
-    # name, so that JSONSchemaGenerator can write a recursive schema back
-    # as the document wrote it (see _as_references there).
-    _components: List[Tuple[Any, str]] = PrivateAttr(default_factory=list)
+    # Set by from_oas and from_raw_data: the document the schema was
+    # loaded from, with its $refs unresolved, and the path to the schema in
+    # it. A recursive schema is resolved up front into a structure that
+    # contains itself; JSONSchemaGenerator generates from this source
+    # instead, as from any schema written with $ref.
+    _source: Optional[Tuple[Dict[Any, Any], Tuple[str, ...]]] = PrivateAttr(
+        default=None
+    )
 
     @staticmethod
     def from_raw_data(raw: Dict[str, Any], base_uri: str) -> Schema:
@@ -146,7 +150,12 @@ class Schema(BaseModel):
                     )
             data = current_data
 
-        return Schema(data=data, base_uri=base_uri)
+        schema = Schema(data=data, base_uri=base_uri)
+        schema._source = (
+            raw,
+            tuple(p for p in base_uri.partition("#")[2].split("/") if p),
+        )
+        return schema
 
     @staticmethod
     def from_oas(
@@ -191,13 +200,7 @@ class Schema(BaseModel):
             data=dict(schema_data),
             base_uri=f"{base_uri}#/components/schemas/{name}",
         )
-        schema._components = [
-            (component, component_name)
-            for component_name, component in resolved["components"][
-                "schemas"
-            ].items()
-            if isinstance(component, dict)
-        ]
+        schema._source = (oas_dict, ("components", "schemas", name))
         return schema
 
 

@@ -28,6 +28,7 @@ from .helpers.utils import (
     allof_ref_markers,
     join_path,
     schema_marker,
+    unwrap_ref,
 )
 from .models.break_models import BreakKind, BreakRule, BreakScenario
 from .models.models import Schema
@@ -209,15 +210,6 @@ def merge_break_scenarios(
 # ---------------------------------------------------------------------------
 
 
-def _unwrap(node: Any) -> Any:
-    if isinstance(node, JsonRef):
-        try:
-            return node.__subject__
-        except Exception:
-            return node
-    return node
-
-
 def _applicable_kinds(
     node: dict,
     required_in_parent: bool,
@@ -290,7 +282,7 @@ def _walk(
     # its required members only; a node that recurs again is cut.
     via_ref = isinstance(node, JsonRef)
     markers = [schema_marker(node)] if via_ref else []
-    node = _unwrap(node)
+    node = unwrap_ref(node)
     if not isinstance(node, dict):
         return
     markers.append(schema_marker(node))

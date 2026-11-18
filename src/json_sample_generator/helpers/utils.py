@@ -2,7 +2,18 @@ import copy
 import json
 import re
 import uuid
-from typing import Any, Callable, Dict, List, Mapping, Set, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    Union,
+)
 
 from jsonref import JsonRef
 
@@ -20,6 +31,75 @@ DEFAULT_MAX_DEPTH = 50
 # keeps required recursion with several children from branching without
 # bound.
 MAX_REENTRIES = 2
+
+
+def unwrap_ref(node: Any) -> Any:
+    """The schema a :class:`JsonRef` stands for, else *node* itself. A
+    reference that cannot be resolved is returned as it is."""
+    if isinstance(node, JsonRef):
+        try:
+            return node.__subject__
+        except Exception:
+            return node
+    return node
+
+
+def contains_itself(data: Any) -> bool:
+    """True when a dict or list in *data* contains itself, directly or
+    through a :class:`JsonRef`. That is how ``Schema.from_oas`` and
+    ``Schema.from_raw_data`` hand over a recursive ``$ref``: resolved up
+    front, as a structure that refers back to itself."""
+    finished: Set[int] = set()
+    on_path: Set[int] = set()
+    stack: List[Tuple[Any, bool]] = [(data, False)]
+    while stack:
+        node, leaving = stack.pop()
+        if leaving:
+            on_path.discard(id(node))
+            finished.add(id(node))
+            continue
+        node = unwrap_ref(node)
+        if not isinstance(node, (dict, list)):
+            continue
+        if id(node) in on_path:
+            return True
+        if id(node) in finished:
+            continue
+        on_path.add(id(node))
+        stack.append((node, True))
+        children = node.values() if isinstance(node, dict) else node
+        stack.extend((child, False) for child in children)
+    return False
+
+
+# Top-level keys a document keeps the schemas its ``$ref``s point into
+# under, besides the one a fragment pointer starts at.
+_REF_CONTAINERS = ("components", "definitions", "$defs")
+
+
+def unresolved_root(
+    document: Mapping[Any, Any], pointer: Sequence[str]
+) -> Optional[Dict[Any, Any]]:
+    """The schema at *pointer* in *document*, with its ``$ref``s still
+    unresolved, as the root of a schema that can resolve them: the schema
+    itself, plus the top-level keys that hold what it refers to (the one
+    *pointer* starts at, and ``components``, ``definitions`` and
+    ``$defs``). An empty *pointer* is the document itself. ``None`` when
+    such a key is also one of the schema's own, so that the schema cannot
+    be the root in place."""
+    if not pointer:
+        return dict(document)
+    node: Any = document
+    for segment in pointer:
+        node = node[segment]
+    root = dict(node)
+    for key in dict.fromkeys((pointer[0], *_REF_CONTAINERS)):
+        if key not in document:
+            continue
+        if key in root:
+            return None
+        root[key] = document[key]
+    return root
 
 
 def schema_marker(node: Any) -> Any:

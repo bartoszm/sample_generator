@@ -1,7 +1,8 @@
 """A recursive ``$ref`` resolved up front: ``Schema.from_oas`` and
 ``Schema.from_raw_data`` hand it over as a structure that contains itself.
-The generator writes it back as ``$ref`` and generates it the way the same
-schema written with ``$ref`` is generated (issue #16)."""
+The generator generates from the document the schema was loaded from, with
+its ``$ref``s unresolved, the way any schema written with ``$ref`` is
+generated (issue #16)."""
 
 from __future__ import annotations
 
@@ -16,12 +17,7 @@ from faker import Faker
 from jsonschema import Draft202012Validator
 
 from json_sample_generator import JSONSchemaGenerator
-from json_sample_generator.JSONSchemaGenerator import (
-    _SHARED_KEY,
-    _as_references,
-    _contains_itself,
-    _holds_ref,
-)
+from json_sample_generator.helpers.utils import unresolved_root
 from json_sample_generator.models import Scenario, Schema
 
 REF = "#/components/schemas/"
@@ -554,7 +550,7 @@ def test_polymorphic_item_holding_items_validates():
 
 
 # ---------------------------------------------------------------------------
-# Only a schema that contains itself takes this path
+# Only a schema that contains itself generates from the source
 # ---------------------------------------------------------------------------
 
 
@@ -574,19 +570,55 @@ def test_polymorphic_item_holding_items_validates():
     ],
     ids=["from-oas", "from-raw-data", "unresolved-recursive"],
 )
-def test_other_schemas_are_not_rewritten(make, monkeypatch):
+def test_other_schemas_are_not_generated_from_the_source(make, monkeypatch):
     # the package's JSONSchemaGenerator attribute is the class
-    module = importlib.import_module(
+    cls = importlib.import_module(
         "json_sample_generator.JSONSchemaGenerator"
-    )
+    ).JSONSchemaGenerator
     calls = []
     monkeypatch.setattr(
-        module,
-        "_as_references",
-        lambda data: calls.append(data) or _as_references(data),
+        cls,
+        "_load_source",
+        staticmethod(lambda *args: calls.append(args)),
     )
     JSONSchemaGenerator(make()).generate()
     assert calls == []
+
+
+def test_a_schema_that_contains_itself_without_a_source_is_refused():
+    node = {"type": "object", "properties": {}}
+    node["properties"]["child"] = node
+    with pytest.raises(ValueError, match="from_oas"):
+        JSONSchemaGenerator(Schema(data=node))
+
+
+def test_the_source_survives_a_copy_of_the_schema():
+    schema = Schema.from_oas(ITEM_OAS, name="Item").model_copy()
+    assert JSONSchemaGenerator(schema).generate()
+
+
+def test_a_fragment_that_shares_a_key_with_its_container_generates(
+    tmp_path,
+):
+    # the schema has a "definitions" key of its own, so it cannot be the
+    # root in place beside the document's "definitions"
+    raw = {
+        "definitions": {
+            "Node": {
+                "type": "object",
+                "definitions": {"Leaf": {"type": "string"}},
+                "properties": {
+                    "leaf": {"$ref": "#/definitions/Node/definitions/Leaf"},
+                    "child": {"$ref": "#/definitions/Node"},
+                },
+            }
+        }
+    }
+    path = tmp_path / "doc.json"
+    path.write_text(json.dumps(raw))
+    schema = Schema.from_raw_data(raw, f"{path.as_uri()}#/definitions/Node")
+    out = JSONSchemaGenerator(schema).generate()
+    assert isinstance(out["leaf"], str)
 
 
 # ---------------------------------------------------------------------------
@@ -594,89 +626,26 @@ def test_other_schemas_are_not_rewritten(make, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_contains_itself():
-    looped = {"type": "object", "properties": {}}
-    looped["properties"]["child"] = looped
-    listed = []
-    listed.append(listed)
-    shared = {"type": "string"}
-    assert _contains_itself(looped)
-    assert _contains_itself({"allOf": listed})
-    # the same dict reached twice is not a cycle
-    assert not _contains_itself({"properties": {"a": shared, "b": shared}})
-    assert not _contains_itself(SELF)
+def test_unresolved_root_is_the_document_without_a_pointer():
+    doc = {"type": "object", "properties": {"a": {"$ref": "#"}}}
+    assert unresolved_root(doc, ()) == doc
 
 
-def test_holds_ref():
-    assert _holds_ref(SELF)
-    # a property named "$ref" is not a reference
-    assert not _holds_ref(
-        {"type": "object", "properties": {"$ref": {"type": "string"}}}
-    )
-    assert not _holds_ref(Schema.from_raw_data(SELF, "file://x.json").data)
-
-
-def test_as_references_writes_shared_dicts_once():
-    item = {"type": "object", "properties": {"id": {"type": "string"}}}
-    item["properties"]["item"] = {"type": "array", "items": item}
-    root = {"type": "object", "properties": {"a": item, "b": item}}
-    tree = _as_references(root)
-    assert tree["properties"]["a"] == {"$ref": f"#/{_SHARED_KEY}/0"}
-    assert tree["properties"]["b"] == {"$ref": f"#/{_SHARED_KEY}/0"}
-    shared = tree[_SHARED_KEY]["0"]
-    assert shared["properties"]["item"]["items"] == {
-        "$ref": f"#/{_SHARED_KEY}/0"
+def test_unresolved_root_carries_the_containers_the_refs_point_into():
+    doc = {
+        "openapi": "3.1.0",
+        "paths": {"/x": {}},
+        "components": {"schemas": {"A": {"type": "object"}}},
+        "$defs": {"D": {"type": "string"}},
     }
-    # a tree again: plain JSON
-    json.dumps(tree)
-
-
-def test_as_references_writes_a_copied_root_in_place():
-    # Schema.from_oas hands over a shallow copy of the component: the root
-    # is written in place, the component it refers to once beside it.
-    node = {"type": "object", "properties": {}}
-    node["properties"]["child"] = node
-    tree = _as_references(dict(node))
-    ref = {"$ref": f"#/{_SHARED_KEY}/0"}
-    assert tree == {
+    root = unresolved_root(doc, ("components", "schemas", "A"))
+    assert root == {
         "type": "object",
-        "properties": {"child": ref},
-        _SHARED_KEY: {"0": {"type": "object", "properties": {"child": ref}}},
+        "components": doc["components"],
+        "$defs": doc["$defs"],
     }
 
 
-def test_as_references_keeps_a_hash_reference():
-    resolved = Schema.from_raw_data(SELF, "file:///item.json").data
-    tree = _as_references(resolved)
-    assert tree["properties"]["item"]["items"] == {"$ref": "#"}
-    assert _SHARED_KEY not in tree
-
-
-def test_as_references_keeps_a_key_of_the_same_name():
-    node = {"type": "object", _SHARED_KEY: "mine", "properties": {}}
-    node["properties"]["child"] = node
-    tree = _as_references(dict(node))
-    assert tree[_SHARED_KEY] == "mine"
-    assert tree["properties"]["child"] == {"$ref": f"#/{_SHARED_KEY}_/0"}
-
-
-def test_as_references_takes_allof_for_a_component_when_nothing_says():
-    # a self-containing Python structure: no JsonRef, no from_oas record
-    base = {"type": "object", "properties": {"id": {"type": "string"}}}
-    root = {"type": "object", "properties": {}}
-    leaf = {
-        "allOf": [
-            base,
-            {"type": "object", "properties": {"n": {"type": "string"}}},
-        ]
-    }
-    root["properties"]["leaf"] = leaf
-    root["properties"]["again"] = {"type": "array", "items": root}
-    tree = _as_references(root)
-    assert tree["properties"]["leaf"] == {"$ref": f"#/{_SHARED_KEY}/1"}
-
-
-def test_as_references_gives_up_on_a_cycle_through_lists_only():
-    listed = []
-    listed.append(listed)
-    assert _as_references({"allOf": listed}) is None
+def test_unresolved_root_gives_up_on_a_key_of_the_same_name():
+    doc = {"definitions": {"A": {"definitions": {}, "type": "object"}}}
+    assert unresolved_root(doc, ("definitions", "A")) is None

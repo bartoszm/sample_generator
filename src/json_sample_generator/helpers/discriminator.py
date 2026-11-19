@@ -14,7 +14,7 @@ implicit mapping). Two things identify the schema a branch stands for:
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
 
 from jsonref import JsonRef
@@ -69,6 +69,28 @@ def tag_schema_names(document: Any) -> Any:
             for name, schema in schemas.items()
         }
     return tagged
+
+
+def pin_values(prop_schema: Any) -> Optional[List[Any]]:
+    """The values a property schema fixes by itself: its ``const``, its
+    ``default`` and the members of its ``enum``, in that order. ``None``
+    when it has none of the three keywords (``allOf`` and references must
+    be merged by the caller). A branch that pins the discriminator property
+    is selected by one of these values, and is not renamed."""
+    if not isinstance(prop_schema, dict):
+        return None
+    keys = [k for k in ("const", "default", "enum") if k in prop_schema]
+    if not keys:
+        return None
+    values: List[Any] = []
+    for key in keys:
+        if key == "enum":
+            options = prop_schema["enum"]
+            if isinstance(options, list):
+                values.extend(options)
+        else:
+            values.append(prop_schema[key])
+    return values
 
 
 def _is_bare_name(target: str) -> bool:

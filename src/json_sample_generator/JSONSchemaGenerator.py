@@ -5,6 +5,7 @@ import math
 import random
 import re
 import warnings
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 from faker import Faker
@@ -16,6 +17,7 @@ from .DefaultValueGenerator import DefaultValueGenerator
 from .helpers import allof_merge, to_type
 from .helpers.discriminator import (
     discriminator_name,
+    pin_values,
     refers_to,
 )
 from .helpers.utils import (
@@ -67,6 +69,21 @@ _MAX_NAMING_DEPTH = 8
 
 # Keywords of a string property schema that ``_length_ok`` accounts for.
 _STRING_KEYS = VARIANT_ANNOTATIONS | {"type", "minLength", "maxLength"}
+
+
+@dataclass(frozen=True)
+class _Branch:
+    """The branch a ``oneOf``/``anyOf`` chose, as the naming reads it.
+
+    *key* is the string a selector named it by; *own* is the branch alone
+    and *flat* the branch as generated (merged with the keywords next to
+    the composition), each with ``allOf`` merged."""
+
+    kind: str
+    selected: Any
+    key: Optional[str]
+    own: Any
+    flat: Any
 
 
 def _accepts(schema: Any, value: Any) -> bool:
@@ -571,10 +588,7 @@ class JSONSchemaGenerator:
         """
         parent = ctx.schema_data
         schemas = parent.get(kind, [])
-        named_by: List[str] = []
-        selected = self._resolve_variant(
-            ctx, schemas, scenario, kind, named_by=named_by
-        )
+        selected, key = self._resolve_variant(ctx, schemas, scenario, kind)
 
         # A discriminator next to both oneOf and anyOf names the oneOf
         # branches, but the anyOf level is handled first: it hands the
@@ -604,11 +618,7 @@ class JSONSchemaGenerator:
                     excluded_properties=excluded,
                     pinned_properties=self._pinned(
                         ctx,
-                        kind,
-                        selected,
-                        own,
-                        own,
-                        named_by,
+                        _Branch(kind, selected, key, own, own),
                         scenario,
                         builder,
                     ),
@@ -629,7 +639,10 @@ class JSONSchemaGenerator:
             "parent_schema": parent,
             "excluded_properties": excluded,
             "pinned_properties": self._pinned(
-                ctx, kind, selected, own, merged, named_by, scenario, builder
+                ctx,
+                _Branch(kind, selected, key, own, merged),
+                scenario,
+                builder,
             ),
         }
         if isinstance(selected, JsonRef):
@@ -639,20 +652,14 @@ class JSONSchemaGenerator:
     def _pinned(
         self,
         ctx: Context,
-        kind: str,
-        selected: Any,
-        own: Any,
-        flat: Any,
-        named_by: List[str],
+        branch: _Branch,
         scenario: Scenario,
         builder: SchemaGeneratorBuilder,
     ) -> Tuple[Tuple[str, Any], ...]:
         """The discriminator values the object handler writes for the
-        *selected* branch: those already pinned plus, when the parent has a
+        *branch* chosen: those already pinned plus, when the parent has a
         discriminator that names the branch, its property and name."""
-        naming = self._branch_name(
-            ctx, kind, selected, own, flat, named_by, scenario, builder
-        )
+        naming = self._branch_name(ctx, branch, scenario, builder)
         if naming is None:
             return ctx.pinned_properties
         return ctx.pinned_properties + (naming,)
@@ -660,19 +667,14 @@ class JSONSchemaGenerator:
     def _branch_name(
         self,
         ctx: Context,
-        kind: str,
-        selected: Any,
-        own: Any,
-        flat: Any,
-        named_by: List[str],
+        branch: _Branch,
         scenario: Scenario,
         builder: SchemaGeneratorBuilder,
     ) -> Optional[Tuple[str, str]]:
         """The parent's ``discriminator.propertyName`` and the value that
-        names the *selected* branch (see :func:`discriminator_name`; a
-        ``str`` selector's key first), for the object handler to write
-        right after it generated the property. *own* is the branch alone
-        and *flat* the branch as generated, each with ``allOf`` merged.
+        names the *branch* (see :func:`discriminator_name`; a ``str``
+        selector's key first), for the object handler to write right after
+        it generated the property.
 
         ``None``, leaving the property as generated, when the branch pins
         it itself (``const``, ``enum`` or ``default``, or every branch of
@@ -684,8 +686,9 @@ class JSONSchemaGenerator:
         """
         if not ctx.discriminator_naming:
             return None
+        kind, own, flat = branch.kind, branch.own, branch.flat
         named = discriminator_name(
-            ctx.schema_data, selected, named_by[0] if named_by else None
+            ctx.schema_data, branch.selected, branch.key
         )
         if named is None or not isinstance(flat, dict):
             return None
@@ -729,9 +732,7 @@ class JSONSchemaGenerator:
         if own_properties and pinned is not None:
             if isinstance(pinned, JsonRef) or "allOf" in pinned:
                 pinned = self.allof_merger({"allOf": [pinned]})
-            if isinstance(pinned, dict) and any(
-                k in pinned for k in ("const", "enum", "default")
-            ):
+            if pin_values(pinned) is not None:
                 return True
         for kind in ("oneOf", "anyOf"):
             branches = flat.get(kind)
@@ -797,9 +798,9 @@ class JSONSchemaGenerator:
         schemas: List[Dict[str, Any]],
         scenario: Scenario,
         kind: str,
-        named_by: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
-        """Pick one branch from a oneOf/anyOf candidate list.
+    ) -> Tuple[Dict[str, Any], Optional[str]]:
+        """Pick one branch from a oneOf/anyOf candidate list, with the
+        string a ``str`` selector named it by (``None`` otherwise).
 
         Selector lookup in ``scenario.oneof_selectors``:
           1. exact match on ``ctx.prop_path``;
@@ -811,8 +812,7 @@ class JSONSchemaGenerator:
             OpenAPI discriminator value (mapping key, a ``$ref`` branch by
             the reference it was written with, or the const/enum/default
             of the property named by ``discriminator.propertyName``), then
-            the name of the schema a ``$ref`` branch refers to. The string
-            is appended to *named_by*.
+            the name of the schema a ``$ref`` branch refers to.
           * ``dict`` — taken as the selected schema fragment.
         """
         if not schemas:
@@ -832,7 +832,7 @@ class JSONSchemaGenerator:
                 ]
                 if escaping:
                     candidates = escaping
-            return candidates[random.randint(0, len(candidates) - 1)]
+            return candidates[random.randint(0, len(candidates) - 1)], None
 
         sel_res = selector(ctx, schemas)
 
@@ -848,13 +848,14 @@ class JSONSchemaGenerator:
                     f"out-of-range index {sel_res} "
                     f"(valid: 0..{len(schemas) - 1})"
                 )
-            return schemas[sel_res]
+            return schemas[sel_res], None
         if isinstance(sel_res, str):
-            if named_by is not None:
-                named_by.append(sel_res)
-            return self._resolve_variant_by_name(sel_res, schemas, ctx, kind)
+            selected = self._resolve_variant_by_name(
+                sel_res, schemas, ctx, kind
+            )
+            return selected, sel_res
         if isinstance(sel_res, dict):
-            return sel_res
+            return sel_res, None
 
         raise TypeError(
             f"{kind} selector at '{ctx.prop_path}' returned "
@@ -950,20 +951,13 @@ class JSONSchemaGenerator:
                 if s.get("title") == ref_tail:
                     return s
 
-        # 2b. match by the discriminator property's const/default/enum[0]
+        # 2b. match by the discriminator property's const/default/enum
         if prop_name:
             for s in schemas:
                 if not isinstance(s, dict):
                     continue
-                prop = (s.get("properties") or {}).get(prop_name)
-                if not isinstance(prop, dict):
-                    continue
-                if prop.get("const") == name:
-                    return s
-                if prop.get("default") == name:
-                    return s
-                enum = prop.get("enum")
-                if isinstance(enum, list) and name in enum:
+                pinned = pin_values((s.get("properties") or {}).get(prop_name))
+                if pinned is not None and name in pinned:
                     return s
 
         # 2c. OpenAPI's implicit mapping: the name of the schema a $ref

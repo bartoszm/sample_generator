@@ -117,7 +117,7 @@ scenario = Scenario(
 | Return type | Behaviour |
 |---|---|
 | `int` | Selects the candidate at that index (bounds-checked, `bool` rejected). |
-| `str` | Matched against each candidate's `title`, then the OpenAPI `discriminator` mapping, then `properties[propertyName].const/enum/default`. Raises `ValueError` on no match. |
+| `str` | Matched against each candidate's `title`, then the OpenAPI `discriminator` mapping (a `$ref` branch by the reference it was written with), then `properties[propertyName].const/enum/default`, then, with a discriminator, the name of the schema a `$ref` branch refers to (OpenAPI's implicit mapping). A schema loaded with `Schema.from_oas` or `Schema.from_raw_data` matches the same way: its named schemas carry their name (`x-schema-name`). Raises `ValueError` on no match. |
 | `dict` | Taken as the selected schema fragment directly. |
 
 ```python
@@ -183,6 +183,44 @@ A parent that holds nothing but the branch list and annotations
 (`discriminator`, `title`, `description`, ...) is generated from the
 branch alone, so `$ref` branches keep their `schema_path`; the properties
 that only the other `oneOf` branches require are left out there too.
+
+With an OpenAPI `discriminator`, the property it names is set to the
+value that names the chosen branch: the branch's key in
+`discriminator.mapping` (the key a `str` selector gave, when several refer
+to the branch), or, for a branch the mapping does not list, the name of
+the schema its `$ref` points at (`#/components/schemas/Dog` gives `Dog`,
+as OpenAPI's implicit mapping does). The branch is generated as without
+a discriminator, and the value it got for the property is replaced as
+soon as the property is generated, so the properties after it (and an
+override that reads it from `ctx.data`) see the name of the branch, and no
+property appears that would not have otherwise (an optional one in
+`minimal_mode` or on a cycle, one that only the other `oneOf` branches
+require, one `scenario_only` does not cover); the random draws are the
+ones made without a discriminator. A generated `null` is replaced too. The
+value is left as generated when the branch pins the property with its own
+`const`, `enum` or `default`, when the branch is polymorphic in turn and
+its own level names the concrete type (it has a discriminator for the
+property, or every branch pins it; a level that does neither is named by
+this one), when the value would not validate against the property's
+schema (`format` included), and when an override or `default_data` sets
+it. An inline branch is named only through a mapping that refers to its
+`title`. A branch that only wraps a reference, `allOf: [{$ref}]` with at
+most annotations such as `description`, is named like the reference. A
+mapping value is a reference, a file or a bare schema name.
+
+`Schema.from_oas` and `Schema.from_raw_data` resolve the `$ref`s before the
+generator sees them, so they put the name of every schema of
+`components/schemas`, `definitions` and `$defs` on the schema itself
+(`x-schema-name`, a vendor extension the generators ignore) and branches
+keep their names. A schema from `Schema(data=..., base_uri=...)` keeps its
+`$ref`s. A schema you resolve yourself has no name to give: pin the
+property with `const` in each branch (strict OpenAPI variants do) or tag it
+with `json_sample_generator.helpers.discriminator.tag_schema_names`.
+
+With `uniqueItems`, items that differ only by a discriminator are limited
+to as many as there are names; once half of the redraws are spent the
+discriminator values are drawn freely, as without a discriminator, so the
+array can still be filled.
 
 
 ## Reusing and composing scenarios

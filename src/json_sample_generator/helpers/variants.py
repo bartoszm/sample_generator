@@ -51,15 +51,22 @@ _ITEMS_COMPARED = 8
 _RULED_OUT = -1000
 
 
-def variant_siblings(parent: Dict[str, Any], kind: str) -> Dict[str, Any]:
+def variant_siblings(
+    parent: Dict[str, Any], kind: str, keep_discriminator: bool = False
+) -> Dict[str, Any]:
     """The keywords of *parent* that constrain an instance together with the
     branch chosen from its *kind* (``"oneOf"`` or ``"anyOf"``): everything
-    but the branch list, annotations and vendor extensions."""
+    but the branch list, annotations and vendor extensions. With
+    *keep_discriminator* a ``discriminator`` stays, for the generator to
+    hand on to the composition of the other kind."""
     return {
         k: v
         for k, v in parent.items()
         if k != kind
-        and k not in VARIANT_ANNOTATIONS
+        and (
+            k not in VARIANT_ANNOTATIONS
+            or (k == "discriminator" and keep_discriminator)
+        )
         and not k.startswith("x-")
     }
 

@@ -54,6 +54,45 @@ The format is based on Keep a Changelog.
   integer counts as a `number`); a schema that does not restrict the type
   gets a string, as before (issue #17).
 
+- With an OpenAPI `discriminator` next to `oneOf`/`anyOf`, the property it
+  names gets the value that names the generated branch: its key in
+  `discriminator.mapping`, or, for a branch the mapping does not list, the
+  name of the schema it stands for. It was a random string that matched
+  neither unless the branches pinned it with `const` or `enum`, which
+  still wins (so does `default`), as does a polymorphic branch's own
+  level. The value is written as soon as the property is generated, so
+  overrides and selectors that read it see the name; no property is added
+  and every other value stays the same. A mapping value may be a
+  reference, a file or a bare schema name. `Schema.from_oas` and
+  `Schema.from_raw_data` keep the names of `components/schemas`,
+  `definitions` and `$defs` as `x-schema-name`, and
+  `collect_variant_sites` labels the branches with the same names. With
+  `uniqueItems`, the discriminator values are drawn freely again once half
+  of the redraws are spent (issue #15).
+- A `str` selector finds a branch through `discriminator.mapping`,
+  comparing the reference the branch was written with (resolved, so two
+  documents' `#/definitions/Pet` differ) before it falls back to a title,
+  and with a discriminator also by the name of the schema it stands for;
+  it raised "no candidate matched" unless the schema had a `title`
+  (issue #15).
+- A `oneOf`/`anyOf` branch that only wraps a reference, `allOf: [{$ref}]`
+  with at most annotations such as `description` or `nullable`, is named
+  and selected like the reference, unless it is a named schema itself, in
+  which case it is named after itself (issue #15).
+
+### Changed
+
+- `collect_variant_sites` labels a branch with the name a discriminator
+  gives it before its `title` (it was the `title` first), so the labels
+  are the values the generator writes.
+- `Schema.from_raw_data` resolves references against the document it is
+  given, with the fragment of the base URI removed, instead of reading the
+  file the URI names; a base URI with a fragment that points at a file
+  that does not exist no longer raises `JsonRefError`.
+- With `uniqueItems`, the discriminator values of the items, nested
+  discriminated `oneOf`s included, are drawn freely once half of the
+  redraws are spent.
+
 ## [0.6.0] - 2026-10-21
 
 Addresses the nine issues reported against 0.5.0, referenced below as

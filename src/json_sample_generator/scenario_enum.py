@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from jsonref import JsonRef
 
 from .helpers.allof_handler import allof_merge
+from .helpers.discriminator import discriminator_name
 from .helpers.utils import (
     DEFAULT_MAX_DEPTH,
     MAX_REENTRIES,
@@ -48,9 +49,10 @@ class VariantSite:
             Array items use ``[*]`` as the index placeholder.
         kind: ``"oneOf"`` or ``"anyOf"``.
         count: Number of variants at this site.
-        names: Best-effort human labels for each variant — the variant's
-            ``title``, else a discriminator-mapping key, else
-            ``f"variant_{i}"``.
+        names: Best-effort human labels for each variant — the name a
+            discriminator gives it (its mapping key, or the name of the
+            schema it stands for; what the generator writes), else the
+            variant's ``title``, else ``f"variant_{i}"``.
     """
 
     path: str
@@ -159,17 +161,17 @@ def minimal_scenarios(
 # ---------------------------------------------------------------------------
 
 
-def _variant_label(variant: Any, index: int, mapping: Dict[str, Any]) -> str:
+def _variant_label(node: Any, variant: Any, index: int) -> str:
+    """The name the generator gives the branch: its discriminator value,
+    else its ``title``, else ``variant_<index>``."""
+    named = discriminator_name(node, variant)
+    if named is not None:
+        return named[1]
     variant = unwrap_ref(variant)
     if isinstance(variant, dict):
         title = variant.get("title")
         if isinstance(title, str) and title:
             return title
-        # Reverse-lookup discriminator mapping by ref tail, if we can.
-        for map_key, ref in mapping.items():
-            tail = str(ref).rsplit("/", 1)[-1]
-            if tail and variant.get("title") == tail:
-                return str(map_key)
     return f"variant_{index}"
 
 
@@ -221,10 +223,8 @@ def _walk(
         variants = node.get(kind)
         if not isinstance(variants, list) or not variants:
             continue
-        discriminator = node.get("discriminator") or {}
-        mapping = discriminator.get("mapping") or {}
         names = tuple(
-            _variant_label(v, i, mapping) for i, v in enumerate(variants)
+            _variant_label(node, v, i) for i, v in enumerate(variants)
         )
         key = (path, kind)
         if key not in seen:
